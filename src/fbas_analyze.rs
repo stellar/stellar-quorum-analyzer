@@ -4,6 +4,7 @@ use batsat::{
     SolverInterface, Var,
 };
 use itertools::Itertools;
+use log::{trace, warn};
 use petgraph::{csr::IndexType, graph::NodeIndex};
 
 // Two imaginary quorums A and B, and we have FBAS system with V vertices. Note
@@ -126,7 +127,10 @@ impl<Cb: Callbacks> FbasAnalyzer<Cb> {
             self.solver.new_var_default();
             self.solver.new_var_default();
         });
-        debug_assert!(self.solver.num_vars() as usize == fbas.graph.node_count() * 2);
+        // sanity check
+        if self.solver.num_vars() as usize != fbas.graph.node_count() * 2 {
+            return Err(FbasError::InternalError("variables and nodes do not match"));
+        }
 
         // formula 1: both quorums are non-empty -- at least one validator must
         // exist in each quorum
@@ -188,6 +192,13 @@ impl<Cb: Callbacks> FbasAnalyzer<Cb> {
 
         add_clauses_for_quorum_relations(&|ni| fbas_lits.in_quorum_a(ni))?;
         add_clauses_for_quorum_relations(&|ni| fbas_lits.in_quorum_b(ni))?;
+
+        trace!(
+            target: "SCP",
+            "FbasAnalyzer num_vars = {}, num_clauses = {}",
+            self.solver.num_vars(),
+            self.solver.num_clauses()
+        );
         Ok(())
     }
 
@@ -209,6 +220,12 @@ impl<Cb: Callbacks> FbasAnalyzer<Cb> {
                         quorum_b.push(*ni);
                     }
                 });
+                warn!(
+                    target: "SCP",
+                    "FbasAnalyzer found quorum split! quorum A: {:?}, quorum B: {:?}",
+                    quorum_a,
+                    quorum_b
+                );
                 SolveStatus::SAT((quorum_a, quorum_b))
             }
             SolveResult::Unsat(_) => SolveStatus::UNSAT,

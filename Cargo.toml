@@ -5,12 +5,13 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
-petgraph = "0.6.5"
+petgraph = "=0.6.5"
 stellar-xdr = "=22.0.0"
 json = { version = "0.12.4", optional = true }
-itertools = "*"
+itertools = "0.10.5"
 stellar-strkey = "0.0.9"
-batsat = "0.6.0"
+batsat = "=0.6.0"
+log = "0.4.19"
 
 [dev-dependencies]
 varisat = "=0.2.2"

@@ -1,7 +1,7 @@
 use crate::{FbasAnalyzer, SolveStatus};
 use batsat::callbacks::{AsyncInterrupt, Basic};
-use std::{io::BufRead, str::FromStr};
 use std::collections::BTreeMap;
+use std::{io::BufRead, str::FromStr};
 
 #[test]
 fn test_solver_interrupt() -> Result<(), Box<dyn std::error::Error>> {
@@ -9,9 +9,12 @@ fn test_solver_interrupt() -> Result<(), Box<dyn std::error::Error>> {
         "./tests/test_data/random/almost_symmetric_network_16_orgs_delete_prob_factor_3.json",
     );
     // first solve it without interruption, it should return `UNSAT`
-    let mut solver = FbasAnalyzer::from_json_path(json_file.as_os_str().to_str().unwrap(), AsyncInterrupt::default())?;
+    let mut solver = FbasAnalyzer::from_json_path(
+        json_file.as_os_str().to_str().unwrap(),
+        AsyncInterrupt::default(),
+    )?;
     assert_eq!(solver.solve(), SolveStatus::UNSAT);
-    
+
     // then we reset it and solve it again, but with interruption
     let cb = AsyncInterrupt::default();
     let handle = cb.get_handle();
@@ -32,10 +35,19 @@ fn test() -> std::io::Result<()> {
         ("validators_broken_1", SolveStatus::UNSAT),
         ("circular_1", SolveStatus::UNSAT),
         ("top_tier", SolveStatus::UNSAT),
-        ("conflicted_2", SolveStatus::SAT((vec![2.into(), 3.into()], vec![0.into(), 1.into()]))),
+        (
+            "conflicted_2",
+            SolveStatus::SAT((vec![2.into(), 3.into()], vec![0.into(), 1.into()])),
+        ),
         ("homedomain_test_1", SolveStatus::UNSAT),
-        ("conflicted_3", SolveStatus::SAT((vec![1.into()], vec![0.into()]))),
-        ("conflicted", SolveStatus::SAT((vec![1.into(), 2.into()], vec![3.into(), 5.into()]))),
+        (
+            "conflicted_3",
+            SolveStatus::SAT((vec![1.into()], vec![0.into()])),
+        ),
+        (
+            "conflicted",
+            SolveStatus::SAT((vec![1.into(), 2.into()], vec![3.into(), 5.into()])),
+        ),
     ]);
 
     for entry in std::fs::read_dir("./tests/test_data/")? {
@@ -44,7 +56,8 @@ fn test() -> std::io::Result<()> {
             if extension == "json" {
                 let case_name = path.file_stem().unwrap().to_str().unwrap();
                 let expected = expected_results.get(case_name).expect(&format!(
-                    "No expected result found for test case: {}", case_name
+                    "No expected result found for test case: {}",
+                    case_name
                 ));
                 let mut solver = FbasAnalyzer::from_json_path(
                     path.as_os_str().to_str().unwrap(),
@@ -52,14 +65,17 @@ fn test() -> std::io::Result<()> {
                 )
                 .unwrap();
                 let res = solver.solve();
-                
+
                 match (&res, expected) {
                     (SolveStatus::SAT((qa, qb)), SolveStatus::SAT((exp_qa, exp_qb))) => {
                         assert_eq!(qa, exp_qa);
                         assert_eq!(qb, exp_qb);
-                    },
-                    (SolveStatus::UNSAT, SolveStatus::UNSAT) => {},
-                    _ => panic!("Case {} failed: expected {:?}, got {:?}", case_name, expected, res),
+                    }
+                    (SolveStatus::UNSAT, SolveStatus::UNSAT) => {}
+                    _ => panic!(
+                        "Case {} failed: expected {:?}, got {:?}",
+                        case_name, expected, res
+                    ),
                 }
             }
         }

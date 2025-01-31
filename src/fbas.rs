@@ -1,3 +1,4 @@
+use log::{trace, warn};
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -139,6 +140,13 @@ impl Fbas {
             let _ = fbas.graph.add_edge(*v_idx, q_idx, ());
         }
 
+        trace!(
+            target: "SCP",
+            "#known validators {}, #graph nodes {}, #graph edges {}",
+            known_validators.len(),
+            fbas.graph.node_count(),
+            fbas.graph.edge_count()
+        );
         Ok(fbas)
     }
 
@@ -161,7 +169,7 @@ impl Fbas {
             if let Some(&idx) = known_validators.get(validator) {
                 new_qset.validators.insert(idx);
             } else {
-                eprintln!("Validator {} is unknown", validator);
+                warn!(target: "SCP", "validator {} is unknown", validator);
             }
         }
 
@@ -198,12 +206,17 @@ impl Fbas {
 
     pub fn from_quorum_set_map_buf<T: AsRef<[u8]>, I: ExactSizeIterator<Item = T>>(
         nodes: I,
-        quorum_set: I,
+        quorum_sets: I,
     ) -> Result<Self, FbasError> {
-        assert_eq!(nodes.len(), quorum_set.len());
+        if nodes.len() != quorum_sets.len() {
+            return Err(FbasError::ParseError(
+                "length in nodes and quorum_sets do not match",
+            ));
+        }
+
         let mut quorum_set_map = QuorumSetMap::new();
 
-        for (node_buf, qset_buf) in nodes.zip(quorum_set) {
+        for (node_buf, qset_buf) in nodes.zip(quorum_sets) {
             let node = NodeId::from_xdr(node_buf, Limits::none())
                 .map_err(|_| FbasError::XdrDecodingError("NodeId cannot be decoded from xdr"))?;
             let node_str = match &node.0 {
@@ -217,7 +230,7 @@ impl Fbas {
                 })?;
                 quorum_set_map.insert(node_str, Rc::new(qset.into()));
             } else {
-                eprintln!("Validator {} is unknown", node_str);
+                warn!(target: "SCP", "Validator {}'s quorum set is empty", node_str);
             }
         }
 

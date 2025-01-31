@@ -9,6 +9,6 @@ pub(crate) mod json_parser;
 #[cfg(test)]
 mod test;
 
-pub use batsat::callbacks::{Callbacks, Basic, AsyncInterrupt, AsyncInterruptHandle};
+pub use batsat::callbacks::{AsyncInterrupt, AsyncInterruptHandle, Basic, Callbacks};
 pub use fbas::FbasError;
 pub use fbas_analyze::{FbasAnalyzer, SolveStatus};
