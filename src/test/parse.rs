@@ -4,7 +4,7 @@ use stellar_strkey::ed25519::PublicKey as StrKeyPublicKey;
 
 #[test]
 fn test_parse_quorum_set_map_from_json() {
-    let quorum_map = quorum_set_map_from_json("./tests/test_data/random/almost_symmetric_network_6_orgs_delete_prob_factor_3_for_stellar_core.json").unwrap();
+    let quorum_map = quorum_set_map_from_json("./tests/test_data/random/for_stellar_core/almost_symmetric_network_6_orgs_delete_prob_factor_3_for_stellar_core.json").unwrap();
     assert_eq!(quorum_map.len(), 18);
 
     // Test parsing of a specific node's quorum set

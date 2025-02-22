@@ -67,8 +67,8 @@ pub struct FbasAnalyzer<Cb: Callbacks> {
 
 #[derive(Clone, Default, PartialEq)]
 pub enum SolveStatus {
-    SAT((Vec<NodeIndex>, Vec<NodeIndex>)),
     UNSAT,
+    SAT((Vec<NodeIndex>, Vec<NodeIndex>)),
     #[default]
     UNKNOWN,
 }
@@ -76,10 +76,10 @@ pub enum SolveStatus {
 impl std::fmt::Debug for SolveStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            SolveStatus::UNSAT => write!(f, "UNSAT"),
             SolveStatus::SAT((quorum_a, quorum_b)) => {
                 write!(f, "SAT(quorum_a: {:?}, quorum_b: {:?})", quorum_a, quorum_b)
             }
-            SolveStatus::UNSAT => write!(f, "UNSAT"),
             SolveStatus::UNKNOWN => write!(f, "UNKNOWN"),
         }
     }
