@@ -1,7 +1,9 @@
-use crate::fbas::{Fbas, FbasError};
+use crate::{
+    fbas::{Fbas, FbasError},
+    resource_limiter::ResourceLimiter,
+};
 use batsat::{
-    interface::SolveResult, intmap::AsIndex, lbool, theory, Callbacks, Lit, Solver,
-    SolverInterface, Var,
+    interface::SolveResult, intmap::AsIndex, lbool, theory, Lit, Solver, SolverInterface, Var,
 };
 use itertools::Itertools;
 use log::{trace, warn};
@@ -58,10 +60,9 @@ impl FbasLitsWrapper {
     }
 }
 
-#[derive(Default)]
-pub struct FbasAnalyzer<Cb: Callbacks> {
+pub struct FbasAnalyzer {
     fbas: Fbas,
-    solver: Solver<Cb>,
+    solver: Solver<ResourceLimiter>,
     status: SolveStatus,
 }
 
@@ -91,42 +92,58 @@ impl std::fmt::Display for SolveStatus {
     }
 }
 
-impl<Cb: Callbacks> FbasAnalyzer<Cb> {
+impl FbasAnalyzer {
     pub fn from_quorum_set_map_buf<T: AsRef<[u8]>, I: ExactSizeIterator<Item = T>>(
         nodes: I,
         quorum_set: I,
-        cb: Cb,
+        resource_limiter: ResourceLimiter,
     ) -> Result<Self, FbasError> {
-        let fbas = Fbas::from_quorum_set_map_buf(nodes, quorum_set)?;
-        Self::from_fbas(fbas, cb)
+        let fbas = Fbas::from_quorum_set_map_buf(nodes, quorum_set, &resource_limiter)?;
+        Self::from_fbas(fbas, resource_limiter)
     }
 
     #[cfg(any(feature = "json", test))]
-    pub fn from_json_path(path: &str, cb: Cb) -> Result<Self, FbasError> {
-        let fbas = Fbas::from_json_path(path)?;
-        Self::from_fbas(fbas, cb)
+    pub fn from_json_path(
+        path: &str,
+        resource_limiter: ResourceLimiter,
+    ) -> Result<Self, FbasError> {
+        let fbas = Fbas::from_json_path(path, &resource_limiter)?;
+        Self::from_fbas(fbas, resource_limiter)
     }
 
-    pub(crate) fn from_fbas(fbas: Fbas, cb: Cb) -> Result<Self, FbasError> {
+    pub(crate) fn from_fbas(
+        fbas: Fbas,
+        resource_limiter: ResourceLimiter,
+    ) -> Result<Self, FbasError> {
         let mut analyzer = Self {
             fbas,
-            solver: Solver::new(Default::default(), cb),
+            solver: Solver::new(Default::default(), resource_limiter),
             status: SolveStatus::UNKNOWN,
         };
         analyzer.construct_formula()?;
         Ok(analyzer)
     }
 
+    fn add_clause_limited(
+        solver: &mut Solver<ResourceLimiter>,
+        clause: &mut Vec<Lit>,
+    ) -> Result<bool, FbasError> {
+        solver.cb().measure_and_enforce_limits()?;
+        Ok(solver.add_clause_reuse(clause))
+    }
+
     fn construct_formula(&mut self) -> Result<(), FbasError> {
+        let resource_limiter = self.solver.cb().clone();
         let fbas = &self.fbas;
         let fbas_lits = FbasLitsWrapper::new(fbas.graph.node_count());
 
         // for each vertex in the graph, we add a variable representing it
         // belonging to quorum A and quorum B
-        fbas.graph.node_indices().for_each(|_| {
+        for _ in 0..fbas.graph.node_count() {
+            resource_limiter.measure_and_enforce_limits()?;
             self.solver.new_var_default();
             self.solver.new_var_default();
-        });
+        }
         // sanity check
         if self.solver.num_vars() as usize != fbas.graph.node_count() * 2 {
             return Err(FbasError::InternalError("variables and nodes do not match"));
@@ -139,17 +156,17 @@ impl<Cb: Callbacks> FbasAnalyzer<Cb> {
             .iter()
             .map(|ni| (fbas_lits.in_quorum_a(ni), fbas_lits.in_quorum_b(ni)))
             .collect();
-        self.solver.add_clause_reuse(&mut quorums_not_empty.0);
-        self.solver.add_clause_reuse(&mut quorums_not_empty.1);
+        Self::add_clause_limited(&mut self.solver, &mut quorums_not_empty.0)?;
+        Self::add_clause_limited(&mut self.solver, &mut quorums_not_empty.1)?;
 
         // formula 2: two quorums do not intersect -- no validator can appear in
         // both quorums
-        fbas.validators.iter().for_each(|ni| {
-            self.solver.add_clause_reuse(&mut vec![
-                !fbas_lits.in_quorum_a(ni),
-                !fbas_lits.in_quorum_b(ni),
-            ]);
-        });
+        for ni in fbas.validators.iter() {
+            Self::add_clause_limited(
+                &mut self.solver,
+                &mut vec![!fbas_lits.in_quorum_a(ni), !fbas_lits.in_quorum_b(ni)],
+            )?;
+        }
 
         // formula 3: qset relation for each vertex must be satisfied
         let mut add_clauses_for_quorum_relations =
@@ -179,13 +196,16 @@ impl<Cb: Callbacks> FbasAnalyzer<Cb> {
                             let elit = in_quorum(elem);
                             neg_pi_j.push(!elit);
                             // this is the first part of the equation
-                            self.solver.add_clause_reuse(&mut vec![!aq_i, !xi_j, elit]);
+                            Self::add_clause_limited(
+                                &mut self.solver,
+                                &mut vec![!aq_i, !xi_j, elit],
+                            )?;
                         }
-                        self.solver.add_clause_reuse(&mut neg_pi_j);
+                        Self::add_clause_limited(&mut self.solver, &mut neg_pi_j)?;
 
                         third_term.push(xi_j);
                     }
-                    self.solver.add_clause_reuse(&mut third_term);
+                    Self::add_clause_limited(&mut self.solver, &mut third_term)?;
                     Ok(())
                 })
             };
@@ -202,7 +222,8 @@ impl<Cb: Callbacks> FbasAnalyzer<Cb> {
         Ok(())
     }
 
-    pub fn solve(&mut self) -> SolveStatus {
+    pub fn solve(&mut self) -> Result<SolveStatus, FbasError> {
+        let resource_limiter = self.solver.cb().clone();
         let mut th = theory::EmptyTheory::new();
         let result = self.solver.solve_limited_th_full(&mut th, &[]);
         self.status = match result {
@@ -229,9 +250,12 @@ impl<Cb: Callbacks> FbasAnalyzer<Cb> {
                 SolveStatus::SAT((quorum_a, quorum_b))
             }
             SolveResult::Unsat(_) => SolveStatus::UNSAT,
-            SolveResult::Unknown(_) => SolveStatus::UNKNOWN,
+            SolveResult::Unknown(_) => {
+                resource_limiter.measure_and_enforce_limits()?;
+                SolveStatus::UNKNOWN
+            }
         };
-        self.status.clone()
+        Ok(self.status.clone())
     }
 
     pub fn get_potential_split(&self) -> Result<(Vec<String>, Vec<String>), FbasError> {

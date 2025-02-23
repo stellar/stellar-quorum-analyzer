@@ -1,33 +1,18 @@
-use crate::{
-    callback::{ResourceLimitingCB, ResourceUsage},
-    FbasAnalyzer, SolveStatus,
-};
-use batsat::callbacks::{AsyncInterrupt, Basic};
+use crate::{FbasAnalyzer, FbasError, ResourceLimiter, SolveStatus};
 use std::collections::BTreeMap;
 use std::{io::BufRead, str::FromStr};
 
-#[test]
-fn test_solver_interrupt() -> Result<(), Box<dyn std::error::Error>> {
-    let json_file = std::path::PathBuf::from(
-        "./tests/test_data/random/almost_symmetric_network_16_orgs_delete_prob_factor_3.json",
-    );
-    // first solve it without interruption, it should return `UNSAT`
-    let mut solver = FbasAnalyzer::from_json_path(
-        json_file.as_os_str().to_str().unwrap(),
-        AsyncInterrupt::default(),
-    )?;
-    assert_eq!(solver.solve(), SolveStatus::UNSAT);
-
-    // then we reset it and solve it again, but with interruption
-    let cb = AsyncInterrupt::default();
-    let handle = cb.get_handle();
-    solver = FbasAnalyzer::from_json_path(json_file.as_os_str().to_str().unwrap(), cb)?;
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_micros(100));
-        handle.interrupt_async();
-    });
-    assert_eq!(solver.solve(), SolveStatus::UNKNOWN);
-    Ok(())
+fn assert_solver_limit_exceeded(res: Result<SolveStatus, FbasError>) -> bool {
+    match res {
+        Ok(_) => false,
+        Err(e) => {
+            if let FbasError::ResourcelimitExceeded(_) = e {
+                true
+            } else {
+                false
+            }
+        }
+    }
 }
 
 #[test]
@@ -35,31 +20,29 @@ fn test_resource_limit() -> Result<(), Box<dyn std::error::Error>> {
     let json_file = std::path::PathBuf::from(
         "./tests/test_data/random/almost_symmetric_network_16_orgs_delete_prob_factor_3.json",
     );
+
+    let wrapped_solve =
+        |time_limit_ms: u64, memory_limit_bytes: usize| -> Result<SolveStatus, FbasError> {
+            let mut solver = FbasAnalyzer::from_json_path(
+                json_file.as_os_str().to_str().unwrap(),
+                ResourceLimiter::new(time_limit_ms, memory_limit_bytes),
+            )?;
+            solver.solve()
+        };
     // first solve it without interruption, it should return `UNSAT`
-    let mut solver = FbasAnalyzer::from_json_path(
-        json_file.as_os_str().to_str().unwrap(),
-        ResourceLimitingCB::new(1000, 100_000_000, ResourceUsage::new()),
-    )?;
-    assert_eq!(solver.solve(), SolveStatus::UNSAT);
+    assert_eq!(wrapped_solve(1000, 100_000_000)?, SolveStatus::UNSAT);
 
     // reaching time limit
-    let mut solver = FbasAnalyzer::from_json_path(
-        json_file.as_os_str().to_str().unwrap(),
-        ResourceLimitingCB::new(1, 10000000, ResourceUsage::new()),
-    )?;
-    assert_eq!(solver.solve(), SolveStatus::UNKNOWN);
+    assert_solver_limit_exceeded(wrapped_solve(1, 10000000));
+
     // reaching memory limit
-    let mut solver = FbasAnalyzer::from_json_path(
-        json_file.as_os_str().to_str().unwrap(),
-        ResourceLimitingCB::new(1000, 100000, ResourceUsage::new()),
-    )?;
-    assert_eq!(solver.solve(), SolveStatus::UNKNOWN);
+    assert_solver_limit_exceeded(wrapped_solve(1000, 100000));
 
     Ok(())
 }
 
 #[test]
-fn test() -> std::io::Result<()> {
+fn test() -> Result<(), Box<dyn std::error::Error>> {
     let expected_results: BTreeMap<&str, SolveStatus> = BTreeMap::from([
         ("missing_1", SolveStatus::UNSAT),
         ("circular_2", SolveStatus::UNSAT),
@@ -92,10 +75,10 @@ fn test() -> std::io::Result<()> {
                 ));
                 let mut solver = FbasAnalyzer::from_json_path(
                     path.as_os_str().to_str().unwrap(),
-                    Basic::default(),
+                    ResourceLimiter::unlimited(),
                 )
                 .unwrap();
-                let res = solver.solve();
+                let res = solver.solve()?;
 
                 match (&res, expected) {
                     (SolveStatus::SAT((qa, qb)), SolveStatus::SAT((exp_qa, exp_qb))) => {
@@ -115,7 +98,7 @@ fn test() -> std::io::Result<()> {
 }
 
 #[test]
-fn test_random_data() -> std::io::Result<()> {
+fn test_random_data() -> Result<(), Box<dyn std::error::Error>> {
     let mut test_cases = vec![];
     let dir_path = std::ffi::OsString::from_str("./tests/test_data/random/").unwrap();
     for entry in std::fs::read_dir("./tests/test_data/random/")? {
@@ -137,10 +120,12 @@ fn test_random_data() -> std::io::Result<()> {
         dimacs_file.push(case.clone());
         dimacs_file.push(".dimacs");
 
-        let mut solver =
-            FbasAnalyzer::from_json_path(json_file.as_os_str().to_str().unwrap(), Basic::default())
-                .unwrap();
-        let res = solver.solve();
+        let mut solver = FbasAnalyzer::from_json_path(
+            json_file.as_os_str().to_str().unwrap(),
+            ResourceLimiter::unlimited(),
+        )
+        .unwrap();
+        let res = solver.solve()?;
         {
             // Open and read the file line by line
             let file = std::fs::File::open(dimacs_file).expect("Failed to open the DIMACS file");

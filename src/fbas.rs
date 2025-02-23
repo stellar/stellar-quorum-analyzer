@@ -7,6 +7,8 @@ use std::{
 };
 use stellar_xdr::curr::{Limits, NodeId, PublicKey, ReadXdr, ScpQuorumSet};
 
+use crate::{resource_limiter::ResourceLimiter, ResourceQuantity};
+
 const QUORUM_SET_MAX_DEPTH: u32 = 4;
 
 pub(crate) type QuorumSetMap = BTreeMap<String, Rc<InternalScpQuorumSet>>;
@@ -62,6 +64,7 @@ pub enum FbasError {
     MaxDepthExceeded,
     XdrDecodingError(&'static str),
     InternalError(&'static str),
+    ResourcelimitExceeded(ResourceQuantity),
 }
 
 impl std::error::Error for FbasError {}
@@ -73,6 +76,12 @@ impl std::fmt::Display for FbasError {
             FbasError::MaxDepthExceeded => write!(f, "Maximum quorum set depth exceeded"),
             FbasError::XdrDecodingError(msg) => write!(f, "XDR decoding error: {}", msg),
             FbasError::InternalError(msg) => write!(f, "Internal error (likely a bug): {}", msg),
+            FbasError::ResourcelimitExceeded(resource_quantity) => write!(
+                f,
+                "Resource limits exceeded -- Time elapsed: {} ms, Memory usage: {} bytes",
+                resource_quantity.time.as_millis(),
+                resource_quantity.mem_bytes
+            ),
         }
     }
 }
@@ -119,7 +128,10 @@ impl Fbas {
         }
     }
 
-    fn from_quorum_set_map(qsm: QuorumSetMap) -> Result<Self, FbasError> {
+    fn from_quorum_set_map(
+        qsm: QuorumSetMap,
+        resource_limiter: &ResourceLimiter,
+    ) -> Result<Self, FbasError> {
         let mut fbas = Fbas::default();
         let mut known_validators = BTreeMap::new();
         let mut known_qsets = BTreeMap::new();
@@ -135,8 +147,13 @@ impl Fbas {
             let v_idx = known_validators
                 .get(node_str)
                 .ok_or_else(|| FbasError::InternalError("key not found"))?;
-            let q_idx =
-                fbas.process_scp_quorum_set(qset, 0, &known_validators, &mut known_qsets)?;
+            let q_idx = fbas.process_scp_quorum_set(
+                qset,
+                0,
+                &known_validators,
+                &mut known_qsets,
+                resource_limiter,
+            )?;
             let _ = fbas.graph.add_edge(*v_idx, q_idx, ());
         }
 
@@ -156,7 +173,10 @@ impl Fbas {
         curr_depth: u32,
         known_validators: &BTreeMap<&String, NodeIndex>,
         known_qsets: &mut BTreeMap<Qset, NodeIndex>,
+        resource_limiter: &ResourceLimiter,
     ) -> Result<NodeIndex, FbasError> {
+        resource_limiter.measure_and_enforce_limits()?;
+
         if curr_depth == QUORUM_SET_MAX_DEPTH {
             return Err(FbasError::MaxDepthExceeded);
         }
@@ -180,6 +200,7 @@ impl Fbas {
                 curr_depth + 1,
                 known_validators,
                 known_qsets,
+                resource_limiter,
             )?;
             new_qset.inner_qsets.insert(qidx);
         }
@@ -207,6 +228,7 @@ impl Fbas {
     pub fn from_quorum_set_map_buf<T: AsRef<[u8]>, I: ExactSizeIterator<Item = T>>(
         nodes: I,
         quorum_sets: I,
+        resource_limiter: &ResourceLimiter,
     ) -> Result<Self, FbasError> {
         if nodes.len() != quorum_sets.len() {
             return Err(FbasError::ParseError(
@@ -234,12 +256,15 @@ impl Fbas {
             }
         }
 
-        Self::from_quorum_set_map(quorum_set_map)
+        Self::from_quorum_set_map(quorum_set_map, resource_limiter)
     }
 
     #[cfg(any(feature = "json", test))]
-    pub fn from_json_path(path: &str) -> Result<Self, FbasError> {
+    pub fn from_json_path(
+        path: &str,
+        resource_limiter: &ResourceLimiter,
+    ) -> Result<Self, FbasError> {
         let quorum_set_map = crate::json_parser::quorum_set_map_from_json(path)?;
-        Self::from_quorum_set_map(quorum_set_map)
+        Self::from_quorum_set_map(quorum_set_map, resource_limiter)
     }
 }
