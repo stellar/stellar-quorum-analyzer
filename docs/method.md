@@ -1,122 +1,123 @@
 # FBAS Quorum Intersection Analysis
 
-## Overview
-This document details the methodology used to verify quorum intersection properties in Federated Byzantine Agreement Systems (FBAS). The approach converts the quorum intersection problem into a SAT problem by:
-1. Expressing the conditions for two disjoint quorums
-2. Converting these conditions into CNF (Conjunctive Normal Form)
-3. Using a SAT solver to find a contradiction
+In this document, we explain how to create a propositional formula, in CNF form, which is satisfiable if and only if there are two disjoint quorums in a give FBAS. This formula can then be passed to a SAT solver to determine whether it is satisfiable or not.
 
-## Disclaimer
-The following derivation of the formulas used in this work is based on Giuliano(@nano-o)'s methodology. Giuliano is the original author and rightful credit holder of this approach. This derivation serves two primary purposes:
-- Educational: To deepen understanding of the implemented method by working through its details
-- Documentation: To provide explicit documentation of the formulas being implemented
-
-This derivation is likely imperfect. If in doubt, please refer to the actual code implementation or file a bug report.
+The method is inspired by the [python-fbas prototype](https://github.com/nano-o/python-fbas), which allows checking properties of FBA systems using automated constraint solvers.
 
 ## Derivation
-Consider a two-quorum set $Q = \{A, B\}$ and a set of validators $V = \{v_0 .. v_{N-1}\}$
 
-**Objective**: To prove that for any two validators, their quorums intersect.
+The general idea is to create a formula that asserts that there are two non-empty, disjoint quorums $A$ and $B$.
 
-**Challenge**: Multiple quorums can exist depending on which slice in the qset is selected for each validator. Finding two intersecting quorums is insufficient; we must prove no configuration leads to disjoint quorums. This can be achieved by solving for one non-intersecting quorum configuration - if found, it disproves the intersection property.
+Our input is a FBAS graph, which is a directed graph whose set of nodes consists of a set of validators $v_1,\dots,v_N$ and a (disjoint) set of other nodes (which we call quorum-set nodes) $q_{N+1},\dots,q_M$. We may refer to a node in the graph $v_i$ or $q_i$ simply as node $i$. Each node $i$ in the graph also has an integer threshold $t_i>0$ that is at most equal to the degree of node $i$ in the graph.
+
+We say that a node $j$ is a successor of a node $i$ when there is an edge in the graph from $i$ to $j$. Given a node $i$, each set of $t_i$ successors of $i$ is called a slice of $i$. A quorum $Q$ is a set of nodes such that, for every node $n\in Q$, $i$ has a slice which is a subset of $Q$ (i.e. at least $t_i$ successors of $i$ are in $Q$).
+
+**Objective**: Prove or disprove that every two quorums have at least one validator in common.
+
+**Challenge**: There may be a number of quorum that is exponential in the number of nodes in the graph, yet we must either a) find two quorums that have no validator in common or b) demonstrate that every two quorums have a validator in common.
 
 ### Constraints
 
-#### 1. Non-Empty Quorums
-Both quorums A and B must be non-empty:
+We consider two unspecified quorums $A$ and $B$ and create $2$ propositional variables $A_i$ and $B_i$ for every node $i$ in the graph (both validator nodes and quorum-set nodes), with the intent that $A_i$ is true when node $i$ is in $A$ and $B_i$ is true when $i$ is in $B$.
+
+We now create a propositional formula in CNF that is satisfiable if and only if there are two quorums $A$ and $B$ that have no validator in common. If the formula is satisfiable, a SAT solver will give use an assignment of truth values to the variables (called a model) that will explicitely describe two disjoint quorums (but there may be many others).
+
+Remember that a CNF formula is a conjunction of disjunctions of literals (where a literal is a variable or the negation of a variable).
+
+#### 1. Both A and B contain at least one validator
 
 $$
-\left(\bigvee_{i=0}^{N-1}  Av_i\right)\bigwedge\left(\bigvee_{i=0}^{N-1}  Bv_i\right)
+\left(\bigvee_{i=1}^N  A_i\right)\wedge\left(\bigvee_{i=1}^N  B_i\right)
 $$
 
-This is already in CNF form. We generate $N$ ($N$ is the number of eligible validators) constraints corresponding to each clause in the parentheses.
+This is already in CNF form.
 
-#### 2. Non-Intersecting Quorums
-Quorums A and B must not intersect (no validator exists in both quorums):
-
-$$
-\bigwedge_{i=0}^{i=N-1} \left(\neg Av_i \bigvee \neg Bv_i \right)
-$$
-
-This is also in CNF form. We add $N$ constraints, one for each eligible validator.
-
-#### 3. Quorum Satisfaction via Transitive QSets
-For each node (validator or transitive qset), quorum satisfaction implies meeting its threshold requirements:
+#### 2.  A and B have no validator in common
 
 $$
-\bigwedge_{i=0}^{V-1} \left( Aq_i \implies \Phi^A_i  \right) \bigwedge \left( Bq_i \implies \Phi^B_i \right)
+\bigwedge_{i=1}^N \left(\neg A_i \vee \neg B_i \right)
 $$
 
-where:
-- $\Phi^A_i$ represents the logic that $q_i$'s quorum condition is satisfied by quorum $A$
-- $V$ is the total number of vertices in the graph
+This is also in CNF form.
 
-Using the implication equivalence $a \implies b  \equiv \neg a \bigvee b$:
+#### 3.  A and B are quorums
 
-$$
-\bigwedge_{i=0}^{V-1} \left( \neg Aq_i \bigvee \Phi^A_i \right) \bigwedge \left( \neg Bq_i \bigvee \Phi^B_i \right)
-$$
-
-This is not CNF form. So the remaining task is to expand this part, and transform it using Teistin transformation into CNF form.
-
-### Expansion of Quorum Satisfaction ($\Phi_i$)
-
-Let $\Pi^i$ be the combinatorial set of $q_i$'s immediate successors:
+For each quorum $Q\in\{A,B\}$, for each node $i$ in the graph (validator node or quorum set node), if $i$ is in $Q$ then $i$ has a slice in $Q$ (i.e. $t_i$ successors of $i$ are in the quorum). Formally:
 
 $$
-\Pi^i = \binom{\text{numSuccessors}(q_i)}{\text{threshold}(q_i)}
+\bigwedge_{i=1}^M \left( A_i \implies \Phi^A_i  \right) \wedge \left( B_i \implies \Phi^B_i \right)
 $$
 
-For example, if a node has 3 successors and threshold 2, $\Pi^i$ contains all possible combinations of 2 successors.
+where $\Phi^A_i$ asserts that $t_i$ successors of $i$ are in the quorum.
 
-Then $\Phi_i$ becomes:
+Using $a \implies b \equiv \neg a \vee b$, the formula expands to:
 
 $$
-\Phi_i \equiv \bigvee_{j=0}^{J-1} \bigwedge_{k=0}^{K-1} \Pi^i_{j,k}
+\bigwedge_{i=1}^M \left( \neg A_i \vee \Phi^A_i \right) \wedge \left( \neg B_i \vee \Phi^B_i \right)
 $$
 
-where:
-- $j$ indexes over all subsets in $\Pi^i$
-- $k$ indexes elements within each subset
-- $J$ is the total number of possible combinations
-- $K$ is the threshold size
+Next we define $\Phi_i^A$ and $\Phi_i^B$, and then convert to CNF. We only explain $\neg A_i \vee \Phi_i^A$ in detail, as $\neg B_i \vee \Phi_i^B$ is similar.
 
-This is saying that at least one `qset` must have all its members be part of the quorum (I've emitted the quorum label $A$ otherwise the script gets too messy).
+##### Expansion of $\Phi_i^A$
 
-However, this is in DNF form. To convert to CNF, we apply Tseitin transformation.
+Let $\Pi^i=\{s^1_i,s^2_i,\dots\}$ be the set of all combinations of $t_i$ successors of node $i$ (i.e. the set of all slices of node $i$). Thus $\Pi^i$ has $\binom{\text{degree}(i)}{t_i}$ elements (this is a binomial coefficient \"$n$ choose $k$\" where $n=\text{degree}(i)$ and $n=t_i$). Given $\Pi$, we can define G$\Phi_i^A$ as:
+
+$$
+\Phi_i^A \equiv \bigvee_{j=1}^{|\Pi_i|} \bigwedge_{k\in s_i^j} A_k
+$$
+
+Here $j$ ranges over all the subsets in $\Pi_i$ and $k$ ranges over elements within each subset. This is saying that at least one slice must have all its members in the quorum.
+
+However, this is in DNF form. To convert to CNF, we apply the Tseitin transformation.
 
 ##### Applying Tseitin Transformation
-Introduce a new variable $\xi^i_j$ for each inner AND relation:
+
+Introduce a new variable $\alpha^i_j$ for each inner AND:
 
 $$
-\xi^i_j \leftrightarrow \bigwedge_{k=0}^{K-1} \Pi^i_{j,k}
+\alpha_i^j \leftrightarrow \bigwedge_{k\in s_i^j} A_k
 $$
 
-expand the equivalence $a \leftrightarrow b \equiv \left(a \implies b\right) \bigwedge \left( b \implies a\right)$, and further expand it by applying the distribution law:
+Now we can already write:
 
 $$
- \left( \bigwedge_{k=0}^{K-1} \left( \neg \xi^i_j \bigvee \Pi^i_{j,k} \right) \right) \bigwedge \left( \xi^i_j \left( \bigvee_{k=0}^{K-1}\neg \Pi^i_{j,k} \right) \right)
+\Phi_i^A = \bigvee_{j=1}^{|\Pi_i|} \alpha_i^j
 $$
 
-All we've done above is introducing new logic gates $\xi$ and making it equivalent to the inner gates wired (AND'ed) together, and this is in CNF form.
-
-This must be done for all $j$, i.e. every slice in $q_i$'s qset. In addition, we must also wire in the outer OR relation 
-$\bigvee_{j=0}^{J-1} \xi^i_{j}$. The combined relation is follows.
+Finally, we must assert that:
 
 $$
-\Phi_i \equiv \bigwedge_{j=0}^{j=J-1} \left( \left( \bigwedge_{k=0}^{K-1} \left( \neg \xi^i_j \bigvee \Pi^i_{j,k} \right) \right) \bigwedge \left( \xi^i_j \left( \bigvee_{k=0}^{K-1}\neg \Pi^i_{j,k} \right) \right) \right) \bigwedge \left( \bigvee_{j=0}^{J-1} \xi^{i}_{j} \right)
+\alpha_i^j \leftrightarrow \bigwedge_{k\in s_i^j} A_k
 $$
 
-Reintroduce the antecedent constrain $\neg Aq_i \bigvee \Phi^A_i$, applying the distribution law to ensure $\neg Aq_i$ is OR'ed with each term inside $\Phi^A_i$:
+We apply the equivalence $a \leftrightarrow b \equiv \left(a \implies b\right) \bigwedge \left( b \implies a\right)$, further expand it by applying the distributive laws, and we get the following CNF formula:
 
 $$
-qsat_i^A = \bigwedge_{j=0}^{J-1} \left( \left( \bigwedge_{k=0}^{K-1} \left(\neg Aq_i \bigvee \neg \xi^i_j \bigvee \Pi^i_{j,k} \right) \right) \bigwedge \left( \neg Aq_i \bigvee \xi^i_j \left( \bigvee_{k=0}^{K-1}\neg \Pi^i_{j,k} \right) \right) \right) \bigwedge \left(  \neg Aq_i \bigvee_{j=0}^{J-1} \xi^{i}_{j} \right)
+ \left(\bigwedge_{k\in s_i^j} \left( \neg \alpha_i^j \vee A_k \right) \right) \wedge \left( \alpha_i^j \vee \bigvee_{k\in s_i^j}\neg A_k \right)
 $$
 
-In the end we combine this into the master constrain for all vertices `V`:
+Overall, $\neg A_i \vee \Phi^A_i$ becomes the CNF:
 
 $$
-\bigwedge_{i=0}^{V-1} qsat_i^A \bigwedge qsat_i^B
+\left(\neg A_i \vee \bigvee_{j=1}^{|\Pi_i|} \alpha_i^j\right)\wedge \bigwedge_{j=1}^{|\Pi_i|}\left(\bigwedge_{k\in s_i^j} \left( \neg \alpha_i^j \vee A_k \right) \right) \wedge \left( \alpha_i^j \vee  \bigvee_{k\in s_i^j}\neg A_k \right)
 $$
 
-and we get our third constrain in CNF form.
+Similarly for $B$, we introduce variables $\beta_i^j$, and $\neg B_i \vee \Phi^B_i$ becomes the CNF:
+
+$$
+\left(\neg B_i \vee \bigvee_{j=1}^{|\Pi_i|} \beta_i^j\right)\wedge \bigwedge_{j=1}^{|\Pi_i|}\left(\bigwedge_{k\in s_i^j} \left( \neg \beta_i^j \vee B_k  \right) \right) \wedge \left( \beta_i^j \vee  \bigvee_{k\in s_i^j}\neg B_k \right)
+$$
+
+#####  Final formula encoding that A and B are quorums
+
+To encode that $A$ is a quorum, we just conjoin the quorum conditions above for each $i$ from $1$ to $M$ and obtain:
+
+$$
+\bigwedge_{i=1}^M \left(\left(\neg A_i \vee \bigvee_{j=1}^{|\Pi_i|} \alpha_i^j\right)\wedge \bigwedge_{j=1}^{|\Pi_i|}\left(\bigwedge_{k\in s_i^j} \left( \neg \alpha_i^j \vee A_k \right) \right)  \wedge \left( \alpha_i^j \vee \bigvee_{k\in s_i^j}\neg A_k \right)\right)
+$$
+
+Similarly for $B$:
+
+$$
+\bigwedge_{i=1}^M \left(\left(\neg B_i \vee \bigvee_{j=1}^{|\Pi_i|} \beta_i^j\right)\wedge \bigwedge_{j=1}^{|\Pi_i|}\left(\bigwedge_{k\in s_i^j} \left( \neg \beta_i^j \vee B_k \right) \right)  \wedge \left( \beta_i^j \vee \bigvee_{k\in s_i^j}\neg B_k \right)\right)
+$$
