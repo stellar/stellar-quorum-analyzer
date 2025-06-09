@@ -10,17 +10,17 @@ The general idea is to create a formula that asserts that there are two non-empt
 
 Our input is a FBAS graph, which is a directed graph whose set of nodes consists of a set of validators $v_1,\dots,v_N$ and a (disjoint) set of other nodes (which we call quorum-set nodes) $q_{N+1},\dots,q_M$. We may refer to a node in the graph $v_i$ or $q_i$ simply as node $i$. Each node $i$ in the graph also has an integer threshold $t_i>0$ that is at most equal to the degree of node $i$ in the graph.
 
-We say that a node $j$ is a successor of a node $i$ when there is an edge in the graph from $i$ to $j$. Given a node $i$, each set of $t_i$ successors of $i$ is called a slice of $i$. A quorum $Q$ is a set of nodes such that, for every node $n\in Q$, $i$ has a slice which is a subset of $Q$ (i.e. at least $t_i$ successors of $i$ are in $Q$).
+We say that a node $j$ is a successor of a node $i$ when there is an edge in the graph from $i$ to $j$. Given a node $i$, each set of $t_i$ successors of $i$ is called a slice of $i$. A quorum $Q$ is a set of nodes such that, for every node $i\in Q$, $i$ has a slice which is a subset of $Q$ (i.e. at least $t_i$ successors of $i$ are in $Q$).
 
 **Objective**: Prove or disprove that every two quorums have at least one validator in common.
 
-**Challenge**: There may be a number of quorum that is exponential in the number of nodes in the graph, yet we must either a) find two quorums that have no validator in common or b) demonstrate that every two quorums have a validator in common.
+**Challenge**: The number of quorums may be exponential in the number of nodes in the graph, yet we must either a) find two quorums that have no validator in common or b) demonstrate that every two quorums have a validator in common.
 
 ### Constraints
 
 We consider two unspecified quorums $A$ and $B$ and create $2$ propositional variables $A_i$ and $B_i$ for every node $i$ in the graph (both validator nodes and quorum-set nodes), with the intent that $A_i$ is true when node $i$ is in $A$ and $B_i$ is true when $i$ is in $B$.
 
-We now create a propositional formula in CNF that is satisfiable if and only if there are two quorums $A$ and $B$ that have no validator in common. If the formula is satisfiable, a SAT solver will give use an assignment of truth values to the variables (called a model) that will explicitely describe two disjoint quorums (but there may be many others).
+We now create a propositional formula in CNF that is satisfiable if and only if there are two quorums $A$ and $B$ that have no validator in common. If the formula is satisfiable, a SAT solver will give use an assignment of truth values to the variables (called a model) that will explicitly describe two disjoint quorums (but there may be many others).
 
 Remember that a CNF formula is a conjunction of disjunctions of literals (where a literal is a variable or the negation of a variable).
 
@@ -60,7 +60,7 @@ Next we define $\Phi_i^A$ and $\Phi_i^B$, and then convert to CNF. We only expla
 
 ##### Expansion of $\Phi_i^A$
 
-Let $\Pi^i=\{s^1_i,s^2_i,\dots\}$ be the set of all combinations of $t_i$ successors of node $i$ (i.e. the set of all slices of node $i$). Thus $\Pi^i$ has $\binom{\text{degree}(i)}{t_i}$ elements (this is a binomial coefficient \"$n$ choose $k$\" where $n=\text{degree}(i)$ and $n=t_i$). Given $\Pi$, we can define G$\Phi_i^A$ as:
+Let $\Pi_i=\{s^1_i,s^2_i,\dots\}$ be the set of all combinations of $t_i$ successors of node $i$ (i.e. the set of all slices of node $i$). Thus $\Pi_i$ has $\binom{\text{degree}(i)}{t_i}$ elements (this is a binomial coefficient \"$n$ choose $k$\" where $n=\text{degree}(i)$ and $n=t_i$). Given $\Pi_i$, we can define $\Phi_i^A$ as:
 
 $$
 \Phi_i^A \equiv \bigvee_{j=1}^{|\Pi_i|} \bigwedge_{k\in s_i^j} A_k
