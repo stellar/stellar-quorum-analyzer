@@ -131,25 +131,24 @@ impl FbasAnalyzer {
 
     fn construct_vars(&mut self) -> Result<(), FbasError> {
         // For each vertex in the graph, we add a variable representing it
-        // belonging to quorum A and quorum B .
-        //
-        // Note: the ordering of variables is slightly different from the formal
-        // description in `method.md`. In the method all A's variables are
-        // grouped together, followd by all B's variables. Here we group the
-        // pair of variables by the same node index together. The ordering does
-        // not affect the model result and it is cleaner to write it this way.
-        self.fbas
-            .graph
-            .node_indices()
-            .try_for_each(|ni| -> Result<(), FbasError> {
-                self.solver.cb().measure_and_enforce_limits()?;
-                let v_a = self.solver.new_var_default();
-                let v_b = self.solver.new_var_default();
-                self.vars
-                    .node_quorum_membership
-                    .insert(ni, (Lit::new(v_a, true), Lit::new(v_b, true)));
-                Ok(())
-            })
+        // belonging to quorum A and quorum B.
+        let node_count = self.fbas.graph.node_count();
+        let vars = (0..2 * node_count)
+            .into_iter()
+            .map(|_| self.solver.new_var_default())
+            .collect::<Vec<_>>();
+        debug_assert!(node_count == self.fbas.graph.node_indices().len());
+        for (i, ni) in self.fbas.graph.node_indices().enumerate() {
+            self.solver.cb().measure_and_enforce_limits()?;
+            self.vars.node_quorum_membership.insert(
+                ni,
+                (
+                    Lit::new(vars[i], true),
+                    Lit::new(vars[i + node_count], true),
+                ),
+            );
+        }
+        Ok(())
     }
 
     fn add_clause_limited(
@@ -246,10 +245,10 @@ impl FbasAnalyzer {
     pub fn solve(&mut self) -> Result<SolveStatus, FbasError> {
         let mut th = theory::EmptyTheory::new();
         // Note on resource limiting: the solver checks `ResourceLimiter::stop()` internally
-        // on its inner loop. If resource limits are exceeds, it will discontinue and return 
+        // on its inner loop. If resource limits are exceeds, it will discontinue and return
         // `SolveStatus::UNKNOWN`.
         // In order for the solver to return a `ResourcelimitExceeded` error, we need to
-        // enforce the limit before returning. 
+        // enforce the limit before returning.
         let resource_limiter = self.solver.cb().clone();
         let result = self.solver.solve_limited_th_full(&mut th, &[]);
         self.status = match result {
