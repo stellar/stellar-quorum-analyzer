@@ -245,6 +245,12 @@ impl FbasAnalyzer {
 
     pub fn solve(&mut self) -> Result<SolveStatus, FbasError> {
         let mut th = theory::EmptyTheory::new();
+        // Note on resource limiting: the solver checks `ResourceLimiter::stop()` internally
+        // on its inner loop. If resource limits are exceeds, it will discontinue and return 
+        // `SolveStatus::UNKNOWN`.
+        // In order for the solver to return a `ResourcelimitExceeded` error, we need to
+        // enforce the limit before returning. 
+        let resource_limiter = self.solver.cb().clone();
         let result = self.solver.solve_limited_th_full(&mut th, &[]);
         self.status = match result {
             SolveResult::Sat(model) => {
@@ -269,8 +275,11 @@ impl FbasAnalyzer {
                 Ok(SolveStatus::SAT((quorum_a, quorum_b)))
             }
             SolveResult::Unsat(_) => Ok(SolveStatus::UNSAT),
+            // most likely the resource limits have been exceeded
             SolveResult::Unknown(_) => Ok(SolveStatus::UNKNOWN),
         }?;
+        // enforce the limit (produce `Err(ResourcelimitExceeded)` if needed) before returning
+        resource_limiter.measure_and_enforce_limits()?;
         Ok(self.status.clone())
     }
 
