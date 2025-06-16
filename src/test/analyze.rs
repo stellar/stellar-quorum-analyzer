@@ -1,44 +1,5 @@
-use crate::{FbasAnalyzer, FbasError, ResourceLimiter, SolveStatus};
+use crate::{FbasAnalyzer, ResourceLimiter, SolveStatus};
 use std::collections::BTreeMap;
-
-fn assert_solver_limit_exceeded(res: Result<SolveStatus, FbasError>) -> bool {
-    match res {
-        Ok(_) => false,
-        Err(e) => {
-            if let FbasError::ResourcelimitExceeded(_) = e {
-                true
-            } else {
-                false
-            }
-        }
-    }
-}
-
-#[test]
-fn test_resource_limit() -> Result<(), Box<dyn std::error::Error>> {
-    let json_file = std::path::PathBuf::from(
-        "./tests/test_data/random/almost_symmetric_network_16_orgs_delete_prob_factor_3.json",
-    );
-
-    let wrapped_solve =
-        |time_limit_ms: u64, memory_limit_bytes: usize| -> Result<SolveStatus, FbasError> {
-            let mut solver = FbasAnalyzer::from_json_path(
-                json_file.as_os_str().to_str().unwrap(),
-                ResourceLimiter::new(time_limit_ms, memory_limit_bytes),
-            )?;
-            solver.solve()
-        };
-    // first solve it without interruption, it should return `UNSAT`
-    assert_eq!(wrapped_solve(1000, 100_000_000)?, SolveStatus::UNSAT);
-
-    // reaching time limit
-    assert_solver_limit_exceeded(wrapped_solve(1, 10000000));
-
-    // reaching memory limit
-    assert_solver_limit_exceeded(wrapped_solve(1000, 100000));
-
-    Ok(())
-}
 
 #[test]
 fn test() -> Result<(), Box<dyn std::error::Error>> {

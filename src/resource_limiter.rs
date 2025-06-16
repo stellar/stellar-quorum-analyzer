@@ -1,4 +1,7 @@
-use crate::{allocator::get_memory_usage, FbasError};
+use crate::{
+    allocator::{get_memory_usage, set_memory_limit},
+    FbasError,
+};
 use batsat::{
     callbacks::{Callbacks, ProgressStatus},
     lbool,
@@ -51,11 +54,12 @@ pub(crate) struct ResourceLimiterImpl {
 pub struct ResourceLimiter(Rc<RefCell<ResourceLimiterImpl>>);
 
 impl ResourceLimiterImpl {
-    pub fn new(time_limit_ms: u64, memory_limit_bytes: usize) -> Self {
+    pub fn new(time_limit_ms: u64, global_mem_limit_bytes: usize) -> Self {
+        set_memory_limit(global_mem_limit_bytes);
         Self {
             start_time: Instant::now(),
             start_memory: get_memory_usage(),
-            limits: ResourceQuantity::new(time_limit_ms, memory_limit_bytes),
+            limits: ResourceQuantity::new(time_limit_ms, global_mem_limit_bytes),
             current_usage: ResourceQuantity::zero(),
         }
     }
@@ -88,21 +92,22 @@ impl ResourceLimiterImpl {
 }
 
 impl ResourceLimiter {
-    pub fn new(time_limit_ms: u64, memory_limit_bytes: usize) -> Self {
+    pub fn new(time_limit_ms: u64, global_mem_limit_bytes: usize) -> Self {
         Self(Rc::new(RefCell::new(ResourceLimiterImpl::new(
             time_limit_ms,
-            memory_limit_bytes,
+            global_mem_limit_bytes,
         ))))
     }
 
-    pub fn unlimited() -> Self {
+    #[cfg(test)]
+    pub(crate) fn unlimited() -> Self {
         Self(Rc::new(RefCell::new(ResourceLimiterImpl::new(
             u64::MAX,
             usize::MAX,
         ))))
     }
 
-    pub fn measure(&self, verbose: bool) {
+    pub(crate) fn measure(&self, verbose: bool) {
         self.0.borrow_mut().measure(verbose);
     }
 
@@ -123,22 +128,22 @@ impl Callbacks for ResourceLimiter {
     fn on_start(&mut self) {
         self.measure(true);
         trace!( target: "SCP",
-            "c ============================[ Search Statistics ]=============================="
+            "c ====================================[ Search Statistics ]===================================="
         );
         trace!( target: "SCP",
-            "c | Conflicts |          ORIGINAL         |          LEARNT          | Progress |"
+            "c | Conflicts |          ORIGINAL         |          LEARNT          |        Resource        |"
         );
         trace!( target: "SCP",
-            "c |           |    Vars  Clauses Literals |    Limit  Clauses Lit/Cl |          |"
+            "c |           |    Vars  Clauses Literals |    Limit  Clauses Lit/Cl | Time(ms) Memory(bytes) |"
         );
         trace!( target: "SCP",
-            "c ==============================================================================="
+            "c ============================================================================================="
         );
     }
 
     fn on_result(&mut self, _: lbool) {
         trace!( target: "SCP",
-            "c ==============================================================================="
+            "c ============================================================================================="
         );
         self.measure(true);
     }
@@ -147,9 +152,11 @@ impl Callbacks for ResourceLimiter {
     where
         F: FnOnce() -> ProgressStatus,
     {
+        self.measure(false);
+        let current = self.0.borrow().current_usage;
         let p = p();
         trace!( target: "SCP",
-            "c | {:9} | {:7} {:8} {:8} | {:8} {:8} {:6.0} | {:6.3} % |",
+            "c | {:9} | {:7} {:8} {:8} | {:8} {:8} {:6.0} | {:8} {:13} |",
             p.conflicts,
             p.dec_vars,
             p.n_clauses,
@@ -157,7 +164,8 @@ impl Callbacks for ResourceLimiter {
             p.max_learnt,
             p.n_learnt,
             p.n_learnt_lits,
-            p.progress_estimate
+            current.time.as_millis(),
+            current.mem_bytes
         );
     }
 
