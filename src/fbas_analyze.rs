@@ -2,7 +2,7 @@ use crate::{
     fbas::{Fbas, FbasError},
     resource_limiter::ResourceLimiter,
 };
-use batsat::{interface::SolveResult, lbool, theory, Lit, Solver, SolverInterface};
+use batsat::{interface::SolveResult, lbool, theory, Lit, Solver, SolverInterface, Var};
 use itertools::Itertools;
 use log::{trace, warn};
 use petgraph::graph::NodeIndex;
@@ -37,28 +37,37 @@ use std::collections::BTreeMap;
 //
 // Once the solver produces a satisfiable result (result == SAT), that means a
 // pair of disjoint quorums has been found, disproving the quorum intersection
-// property.
+// property. An `UNSAT` result means all quorums intersect, i.e. it has been
+// proven there are no disjoint quorums.
 
 #[derive(Default)]
 struct VarManager {
     // stores variables representing nodes in quorums A and B
-    node_quorum_membership: BTreeMap<NodeIndex, (Lit, Lit)>,
+    node_quorum_membership: BTreeMap<NodeIndex, (Var, Var)>,
 }
 
 impl VarManager {
-    fn in_quorum_a(&self, ni: &NodeIndex) -> Result<Lit, FbasError> {
+    fn quorum_a(&self, ni: &NodeIndex) -> Result<Var, FbasError> {
         Ok(self
             .node_quorum_membership
             .get(ni)
             .ok_or(FbasError::InternalError("Node index not found"))?
             .0)
     }
-    fn in_quorum_b(&self, ni: &NodeIndex) -> Result<Lit, FbasError> {
+    fn quorum_b(&self, ni: &NodeIndex) -> Result<Var, FbasError> {
         Ok(self
             .node_quorum_membership
             .get(ni)
             .ok_or(FbasError::InternalError("Node index not found"))?
             .1)
+    }
+    // constructs and returns a Lit representing the node's membership of quorum A
+    pub fn lit_in_quorum_a(&self, ni: &NodeIndex, is_member: bool) -> Result<Lit, FbasError> {
+        self.quorum_a(ni).map(|var| Lit::new(var, is_member))
+    }
+    // constructs and returns a Lit representing the node's membership of quorum B
+    pub fn lit_in_quorum_b(&self, ni: &NodeIndex, is_member: bool) -> Result<Lit, FbasError> {
+        self.quorum_b(ni).map(|var| Lit::new(var, is_member))
     }
 }
 
@@ -133,20 +142,21 @@ impl FbasAnalyzer {
         // For each vertex in the graph, we add a variable representing it
         // belonging to quorum A and quorum B.
         let node_count = self.fbas.graph.node_count();
+        // sanity check so that we can use `[]` safely
+        if node_count != self.fbas.graph.node_indices().len() {
+            return Err(FbasError::InternalError(
+                "node count does not match internal nodes length",
+            ));
+        }
         let vars = (0..2 * node_count)
             .into_iter()
             .map(|_| self.solver.new_var_default())
             .collect::<Vec<_>>();
-        debug_assert!(node_count == self.fbas.graph.node_indices().len());
         for (i, ni) in self.fbas.graph.node_indices().enumerate() {
             self.solver.cb().measure_and_enforce_limits()?;
-            self.vars.node_quorum_membership.insert(
-                ni,
-                (
-                    Lit::new(vars[i], true),
-                    Lit::new(vars[i + node_count], true),
-                ),
-            );
+            self.vars
+                .node_quorum_membership
+                .insert(ni, (vars[i], vars[i + node_count]));
         }
         Ok(())
     }
@@ -162,21 +172,25 @@ impl FbasAnalyzer {
     fn construct_formula(&mut self) -> Result<(), FbasError> {
         let fbas = &self.fbas;
         // vars representing quorum membership must be pre-constructed
-        debug_assert!(self.solver.num_vars() as usize == fbas.graph.node_count() * 2);
+        if self.solver.num_vars() as usize != fbas.graph.node_count() * 2 {
+            return Err(FbasError::InternalError(
+                "solver internal variables count does not match node count",
+            ));
+        }
 
         // formula 1: both quorums are non-empty -- at least one *validator* must
         // exist in each quorum
         let mut quorum_a_non_empty = fbas
             .validators
             .iter()
-            .map(|ni| self.vars.in_quorum_a(ni))
+            .map(|ni| self.vars.lit_in_quorum_a(ni, true))
             .collect::<Result<Vec<Lit>, FbasError>>()?;
         Self::add_clause_limited(&mut self.solver, &mut quorum_a_non_empty)?;
 
         let mut quorum_b_non_empty = fbas
             .validators
             .iter()
-            .map(|ni| self.vars.in_quorum_b(ni))
+            .map(|ni| self.vars.lit_in_quorum_b(ni, true))
             .collect::<Result<Vec<Lit>, FbasError>>()?;
         Self::add_clause_limited(&mut self.solver, &mut quorum_b_non_empty)?;
 
@@ -185,53 +199,66 @@ impl FbasAnalyzer {
         for ni in fbas.validators.iter() {
             Self::add_clause_limited(
                 &mut self.solver,
-                &mut vec![!self.vars.in_quorum_a(ni)?, !self.vars.in_quorum_b(ni)?],
+                &mut vec![
+                    self.vars.lit_in_quorum_a(ni, false)?,
+                    self.vars.lit_in_quorum_b(ni, false)?,
+                ],
             )?;
         }
 
         // formula 3: qset relation for each vertex must be satisfied. Variable
         // naming follows "Final formula encoding that A and B are quorums" in
         // `method.md`, assuming quorum A.
-        let mut add_clauses_for_quorum_relations =
-            |in_quorum: &dyn Fn(&NodeIndex) -> Result<Lit, FbasError>| -> Result<(), FbasError> {
-                fbas.graph.node_indices().try_for_each(|n_i| {
-                    let a_i = in_quorum(&n_i)?;
-                    let threshold = fbas
-                        .graph
-                        .node_weight(n_i)
-                        .ok_or_else(|| FbasError::InternalError("Node index not found"))?
-                        .get_threshold();
-                    let successors = fbas.graph.neighbors(n_i);
-                    let comb_of_successors =
-                        successors.into_iter().combinations(threshold as usize);
+        let mut add_clauses_for_quorum_relations = |node_in_quorum: &dyn Fn(
+            &NodeIndex,
+            bool,
+        ) -> Result<
+            Lit,
+            FbasError,
+        >|
+         -> Result<(), FbasError> {
+            fbas.graph.node_indices().try_for_each(|n_i| {
+                let threshold = fbas
+                    .graph
+                    .node_weight(n_i)
+                    .ok_or_else(|| FbasError::InternalError("Node index not found"))?
+                    .get_threshold();
+                let successors = fbas.graph.neighbors(n_i);
+                let comb_of_successors = successors.into_iter().combinations(threshold as usize);
 
-                    let mut first_term = Vec::with_capacity(comb_of_successors.size_hint().0 + 1);
-                    first_term.push(!a_i);
-                    for (_j, pi_i) in comb_of_successors.enumerate() {
-                        // Create a new variable as per Tseitin transformation for each
-                        // combination. These are internal variables for facilitation of
-                        // SAT solving. There is no need to store their indices.
-                        let alpha_i_j = Lit::new(self.solver.new_var_default(), true);
-                        // 1st term
-                        first_term.push(alpha_i_j);
+                let mut first_term = Vec::with_capacity(comb_of_successors.size_hint().0 + 1);
+                first_term.push(node_in_quorum(&n_i, false)?);
+                for (_j, pi_i) in comb_of_successors.enumerate() {
+                    // Create a new variable as per Tseitin transformation for each
+                    // combination. These are internal variables for facilitation of
+                    // SAT solving. There is no need to store their indices.
+                    let alpha_i_j = Lit::new(self.solver.new_var_default(), true);
+                    // 1st term
+                    first_term.push(alpha_i_j);
 
-                        let mut third_term = Vec::with_capacity(pi_i.len() + 1);
-                        third_term.push(alpha_i_j);
-                        for (_k, n_k) in pi_i.iter().enumerate() {
-                            let a_k = in_quorum(&n_k)?;
-                            // 2nd term
-                            Self::add_clause_limited(&mut self.solver, &mut vec![!alpha_i_j, a_k])?;
-                            // 3rd term
-                            third_term.push(!a_k);
-                        }
-                        Self::add_clause_limited(&mut self.solver, &mut third_term)?;
+                    let mut third_term = Vec::with_capacity(pi_i.len() + 1);
+                    third_term.push(alpha_i_j);
+                    for (_k, n_k) in pi_i.iter().enumerate() {
+                        // 2nd term
+                        Self::add_clause_limited(
+                            &mut self.solver,
+                            &mut vec![!alpha_i_j, node_in_quorum(&n_k, true)?],
+                        )?;
+                        // 3rd term
+                        third_term.push(node_in_quorum(&n_k, false)?);
                     }
-                    Self::add_clause_limited(&mut self.solver, &mut first_term)?;
-                    Ok(())
-                })
-            };
-        add_clauses_for_quorum_relations(&|ni| self.vars.in_quorum_a(ni))?;
-        add_clauses_for_quorum_relations(&|ni| self.vars.in_quorum_b(ni))?;
+                    Self::add_clause_limited(&mut self.solver, &mut third_term)?;
+                }
+                Self::add_clause_limited(&mut self.solver, &mut first_term)?;
+                Ok(())
+            })
+        };
+        add_clauses_for_quorum_relations(&|ni, is_member| {
+            self.vars.lit_in_quorum_a(ni, is_member)
+        })?;
+        add_clauses_for_quorum_relations(&|ni, is_member| {
+            self.vars.lit_in_quorum_b(ni, is_member)
+        })?;
 
         trace!(
             target: "SCP",
@@ -256,11 +283,11 @@ impl FbasAnalyzer {
                 let mut quorum_a = vec![];
                 let mut quorum_b = vec![];
                 for ni in self.fbas.validators.iter() {
-                    let la = self.vars.in_quorum_a(ni)?;
+                    let la = self.vars.lit_in_quorum_a(ni, true)?;
                     if model.value_lit(la) == lbool::TRUE {
                         quorum_a.push(*ni);
                     }
-                    let lb = self.vars.in_quorum_b(ni)?;
+                    let lb = self.vars.lit_in_quorum_b(ni, true)?;
                     if model.value_lit(lb) == lbool::TRUE {
                         quorum_b.push(*ni);
                     }
