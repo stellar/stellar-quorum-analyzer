@@ -54,6 +54,11 @@ pub(crate) struct ResourceLimiterImpl {
 pub struct ResourceLimiter(Rc<RefCell<ResourceLimiterImpl>>);
 
 impl ResourceLimiterImpl {
+    // WARNING: This function sets a global memory limit that affects the entire
+    // process. The memory limit is enforced by the global allocator and will
+    // cause allocation failures when exceeded. Use with caution in
+    // multi-threaded environments or when other parts of the process may
+    // allocate memory concurrently.
     pub fn new(time_limit_ms: u64, global_mem_limit_bytes: usize) -> Self {
         set_memory_limit(global_mem_limit_bytes);
         Self {
