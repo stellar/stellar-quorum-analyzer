@@ -13,3 +13,4 @@ pub use batsat::callbacks::{AsyncInterrupt, AsyncInterruptHandle, Basic, Callbac
 pub use fbas::FbasError;
 pub use fbas_analyze::{FbasAnalyzer, SolveStatus};
 pub use resource_limiter::{ResourceLimiter, ResourceQuantity};
+pub use stellar_xdr as xdr;
