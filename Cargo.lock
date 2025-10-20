@@ -568,8 +568,9 @@ dependencies = [
 
 [[package]]
 name = "stellar-xdr"
-version = "23.0.0"
-source = "git+https://github.com/stellar/rs-stellar-xdr?rev=8505f22833f4054227689c35f9cf253a6836cbac#8505f22833f4054227689c35f9cf253a6836cbac"
+version = "24.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ceec163a64a9ed03359dab3b73ca556251020edc0103bae7073a38eb1708ab5"
 dependencies = [
  "cfg_eval",
  "crate-git-revision",
