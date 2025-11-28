@@ -6,7 +6,7 @@ license = "Apache-2.0"
 
 [dependencies]
 petgraph = "=0.6.5"
-stellar-xdr = { version = "=24.0.1", git = "https://github.com/stellar/rs-stellar-xdr", rev = "89cc1cbadf1b9a16843826954dede7fec514d8e7" }
+stellar-xdr = { version = "=25.0.0-rc.1" }
 json = { version = "0.12.4", optional = true }
 itertools = "0.10.5"
 stellar-strkey = "0.0.13"
