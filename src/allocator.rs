@@ -8,12 +8,16 @@ pub struct LimitedAllocator {
 
 unsafe impl GlobalAlloc for LimitedAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let new_size = self.allocated.fetch_add(layout.size(), Ordering::SeqCst);
-        if new_size > self.limit.load(Ordering::SeqCst) {
+        let old_size = self.allocated.fetch_add(layout.size(), Ordering::SeqCst);
+        if old_size + layout.size() > self.limit.load(Ordering::SeqCst) {
             self.allocated.fetch_sub(layout.size(), Ordering::SeqCst);
             std::ptr::null_mut()
         } else {
-            System.alloc(layout)
+            let ptr = System.alloc(layout);
+            if ptr.is_null() {
+                self.allocated.fetch_sub(layout.size(), Ordering::SeqCst);
+            }
+            ptr
         }
     }
 

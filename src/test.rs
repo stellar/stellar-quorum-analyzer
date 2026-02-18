@@ -1,3 +1,4 @@
+mod allocator;
 mod analyze;
 mod limits;
 #[cfg(any(feature = "json", test))]
