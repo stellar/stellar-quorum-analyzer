@@ -122,7 +122,7 @@ fn test_resource_limiter_underflow_ps() {
 
     // Allocate memory before creating the resource limiter
     let pre_alloc = vec![0u8; 1_000_000];
-    
+
     let mem_limit: usize = 500 * 1024 * 1024; // 500 MB
     let limiter = ResourceLimiter::new(u64::MAX, mem_limit);
 
@@ -131,7 +131,10 @@ fn test_resource_limiter_underflow_ps() {
 
     // mem_bytes = 0 < 500MB → Ok
     let result = limiter.measure_and_enforce_limits();
-    assert!(result.is_ok(), "Should not fail when memory decreases below start");
+    assert!(
+        result.is_ok(),
+        "Should not fail when memory decreases below start"
+    );
 }
 
 #[test]
