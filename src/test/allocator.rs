@@ -32,19 +32,14 @@ fn test_allocator_limit_precision_ps() {
     // After the fix, old_size + layout.size() is checked correctly.
     assert!(
         used <= memory_limit,
-        "Memory usage {} should not exceed limit {}",
-        used,
-        memory_limit
+        "Memory usage {used} should not exceed limit {memory_limit}"
     );
 
     // Verify the counter is tracking accurately
+    let expected_min = max_allocs * alloc_size;
     assert!(
-        used >= max_allocs * alloc_size,
-        "Memory usage {} should be at least {} ({}x{})",
-        used,
-        max_allocs * alloc_size,
-        max_allocs,
-        alloc_size
+        used >= expected_min,
+        "Memory usage {used} should be at least {expected_min} ({max_allocs}x{alloc_size})"
     );
 }
 

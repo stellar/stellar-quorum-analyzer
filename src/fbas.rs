@@ -72,10 +72,10 @@ impl std::error::Error for FbasError {}
 impl std::fmt::Display for FbasError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FbasError::ParseError(msg) => write!(f, "Parse error: {}", msg),
+            FbasError::ParseError(msg) => write!(f, "Parse error: {msg}"),
             FbasError::MaxDepthExceeded => write!(f, "Maximum quorum set depth exceeded"),
-            FbasError::XdrDecodingError(msg) => write!(f, "XDR decoding error: {}", msg),
-            FbasError::InternalError(msg) => write!(f, "Internal error (likely a bug): {}", msg),
+            FbasError::XdrDecodingError(msg) => write!(f, "XDR decoding error: {msg}"),
+            FbasError::InternalError(msg) => write!(f, "Internal error (likely a bug): {msg}"),
             FbasError::ResourcelimitExceeded(resource_quantity) => write!(
                 f,
                 "Resource limits exceeded -- Time elapsed: {} ms, Memory usage: {} bytes",
@@ -146,7 +146,7 @@ impl Fbas {
         for (node_str, qset) in qsm.iter() {
             let v_idx = known_validators
                 .get(node_str)
-                .ok_or_else(|| FbasError::InternalError("key not found"))?;
+                .ok_or(FbasError::InternalError("key not found"))?;
             let q_idx = fbas.process_scp_quorum_set(
                 qset,
                 0,
@@ -181,8 +181,10 @@ impl Fbas {
             return Err(FbasError::MaxDepthExceeded);
         }
 
-        let mut new_qset = Qset::default();
-        new_qset.threshold = qset.threshold;
+        let mut new_qset = Qset {
+            threshold: qset.threshold,
+            ..Default::default()
+        };
 
         // Add validators
         for validator in &qset.validators {
