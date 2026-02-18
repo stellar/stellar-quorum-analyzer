@@ -111,3 +111,48 @@ fn test_memory_limit() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+
+// Subprocess helper for test_resource_limiter_underflow.
+#[ignore]
+#[test]
+fn test_resource_limiter_underflow_ps() {
+    use crate::allocator::set_memory_limit;
+    // Use a generous allocator limit so allocations succeed
+    set_memory_limit(usize::MAX);
+
+    // Allocate memory before creating the resource limiter
+    let pre_alloc = vec![0u8; 1_000_000];
+    
+    let mem_limit: usize = 500 * 1024 * 1024; // 500 MB
+    let limiter = ResourceLimiter::new(u64::MAX, mem_limit);
+
+    // Free so get_memory_usage() < start_memory
+    drop(pre_alloc);
+
+    // mem_bytes = 0 < 500MB → Ok
+    let result = limiter.measure_and_enforce_limits();
+    assert!(result.is_ok(), "Should not fail when memory decreases below start");
+}
+
+#[test]
+fn test_resource_limiter_underflow() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new("cargo")
+        .args([
+            "test",
+            "--package",
+            "stellar-quorum-analyzer",
+            "--lib",
+            "--",
+            "test_resource_limiter_underflow_ps",
+            "--include-ignored",
+            "--nocapture",
+        ])
+        .output()?;
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "Subprocess should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}

@@ -73,7 +73,7 @@ impl ResourceLimiterImpl {
         let time = self.start_time.elapsed();
         let mem_bytes = get_memory_usage()
             .checked_sub(self.start_memory)
-            .unwrap_or(usize::MAX);
+            .unwrap_or(0);
         if verbose {
             trace!( target: "SCP",
                 "Time elapsed: {} ms, Time limit: {} ms; Memory usage: {} bytes, Memory limit: {} bytes",
