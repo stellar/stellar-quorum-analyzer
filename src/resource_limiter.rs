@@ -11,7 +11,6 @@ use std::{
     cell::RefCell,
     rc::Rc,
     time::{Duration, Instant},
-    u64, usize,
 };
 
 #[derive(Clone, Debug, Copy)]
@@ -71,9 +70,7 @@ impl ResourceLimiterImpl {
 
     fn measure(&mut self, verbose: bool) {
         let time = self.start_time.elapsed();
-        let mem_bytes = get_memory_usage()
-            .checked_sub(self.start_memory)
-            .unwrap_or(usize::MAX);
+        let mem_bytes = get_memory_usage().saturating_sub(self.start_memory);
         if verbose {
             trace!( target: "SCP",
                 "Time elapsed: {} ms, Time limit: {} ms; Memory usage: {} bytes, Memory limit: {} bytes",
