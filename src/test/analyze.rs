@@ -20,10 +20,9 @@ fn test() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(extension) = path.extension() {
             if extension == "json" {
                 let case_name = path.file_stem().unwrap().to_str().unwrap();
-                let expected_sat = expected_results.get(case_name).expect(&format!(
-                    "No expected result found for test case: {}",
-                    case_name
-                ));
+                let expected_sat = expected_results.get(case_name).unwrap_or_else(|| {
+                    panic!("No expected result found for test case: {case_name}")
+                });
 
                 let mut solver = FbasAnalyzer::from_json_path(
                     path.as_os_str().to_str().unwrap(),
@@ -35,21 +34,20 @@ fn test() -> Result<(), Box<dyn std::error::Error>> {
 
                 assert_eq!(
                     actual_sat, *expected_sat,
-                    "Case {} failed: expected {}, got {}",
-                    case_name, expected_sat, actual_sat
+                    "Case {case_name} failed: expected {expected_sat}, got {actual_sat}"
                 );
 
                 // Print the split if one was found
                 if actual_sat {
                     let (qa, qb) = solver.get_potential_split()?;
-                    println!("\nFound quorum split for {}:", case_name);
+                    println!("\nFound quorum split for {case_name}:");
                     println!("Quorum A:");
                     for validator in &qa {
-                        println!("  - {}", validator);
+                        println!("  - {validator}");
                     }
                     println!("\nQuorum B:");
                     for validator in &qb {
-                        println!("  - {}", validator);
+                        println!("  - {validator}");
                     }
                     println!();
                 }
@@ -319,10 +317,9 @@ fn test_random_data() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(extension) = path.extension() {
             if extension == "json" {
                 let case_name = path.file_stem().unwrap().to_str().unwrap();
-                let expected_sat = expected_results.get(case_name).expect(&format!(
-                    "No expected result found for test case: {}",
-                    case_name
-                ));
+                let expected_sat = expected_results.get(case_name).unwrap_or_else(|| {
+                    panic!("No expected result found for test case: {case_name}")
+                });
 
                 let mut solver = FbasAnalyzer::from_json_path(
                     path.as_os_str().to_str().unwrap(),
@@ -334,21 +331,20 @@ fn test_random_data() -> Result<(), Box<dyn std::error::Error>> {
 
                 assert_eq!(
                     actual_sat, *expected_sat,
-                    "Case {} failed: expected {}, got {}",
-                    case_name, expected_sat, actual_sat
+                    "Case {case_name} failed: expected {expected_sat}, got {actual_sat}"
                 );
 
                 // Print the split if one was found
                 if actual_sat {
                     let (qa, qb) = solver.get_potential_split()?;
-                    println!("\nFound quorum split for {}:", case_name);
+                    println!("\nFound quorum split for {case_name}:");
                     println!("Quorum A:");
                     for validator in &qa {
-                        println!("  - {}", validator);
+                        println!("  - {validator}");
                     }
                     println!("\nQuorum B:");
                     for validator in &qb {
-                        println!("  - {}", validator);
+                        println!("  - {validator}");
                     }
                     println!();
                 }

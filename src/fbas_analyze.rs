@@ -91,7 +91,7 @@ impl std::fmt::Debug for SolveStatus {
         match self {
             SolveStatus::UNSAT => write!(f, "UNSAT"),
             SolveStatus::SAT((quorum_a, quorum_b)) => {
-                write!(f, "SAT(quorum_a: {:?}, quorum_b: {:?})", quorum_a, quorum_b)
+                write!(f, "SAT(quorum_a: {quorum_a:?}, quorum_b: {quorum_b:?})")
             }
             SolveStatus::UNKNOWN => write!(f, "UNKNOWN"),
         }
@@ -100,7 +100,7 @@ impl std::fmt::Debug for SolveStatus {
 
 impl std::fmt::Display for SolveStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        <Self as std::fmt::Debug>::fmt(&self, f)
+        <Self as std::fmt::Debug>::fmt(self, f)
     }
 }
 
@@ -149,7 +149,6 @@ impl FbasAnalyzer {
             ));
         }
         let vars = (0..2 * node_count)
-            .into_iter()
             .map(|_| self.solver.new_var_default())
             .collect::<Vec<_>>();
         for (i, ni) in self.fbas.graph.node_indices().enumerate() {
@@ -221,14 +220,14 @@ impl FbasAnalyzer {
                 let threshold = fbas
                     .graph
                     .node_weight(n_i)
-                    .ok_or_else(|| FbasError::InternalError("Node index not found"))?
+                    .ok_or(FbasError::InternalError("Node index not found"))?
                     .get_threshold();
                 let successors = fbas.graph.neighbors(n_i);
                 let comb_of_successors = successors.into_iter().combinations(threshold as usize);
 
                 let mut first_term = Vec::with_capacity(comb_of_successors.size_hint().0 + 1);
                 first_term.push(node_in_quorum(&n_i, false)?);
-                for (_j, pi_i) in comb_of_successors.enumerate() {
+                for pi_i in comb_of_successors {
                     // Create a new variable as per Tseitin transformation for each
                     // combination. These are internal variables for facilitation of
                     // SAT solving. There is no need to store their indices.
@@ -238,14 +237,14 @@ impl FbasAnalyzer {
 
                     let mut third_term = Vec::with_capacity(pi_i.len() + 1);
                     third_term.push(alpha_i_j);
-                    for (_k, n_k) in pi_i.iter().enumerate() {
+                    for n_k in pi_i.iter() {
                         // 2nd term
                         Self::add_clause_limited(
                             &mut self.solver,
-                            &mut vec![!alpha_i_j, node_in_quorum(&n_k, true)?],
+                            &mut vec![!alpha_i_j, node_in_quorum(n_k, true)?],
                         )?;
                         // 3rd term
-                        third_term.push(node_in_quorum(&n_k, false)?);
+                        third_term.push(node_in_quorum(n_k, false)?);
                     }
                     Self::add_clause_limited(&mut self.solver, &mut third_term)?;
                 }

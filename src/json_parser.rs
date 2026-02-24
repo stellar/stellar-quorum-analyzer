@@ -35,7 +35,7 @@ fn try_parse_quorum_set_map_from_json_regular(root: Object) -> Result<QuorumSetM
         let public_key = node
             .get("node")
             .and_then(|n| n.as_str())
-            .ok_or_else(|| FbasError::ParseError("node field missing or not a string"))?
+            .ok_or(FbasError::ParseError("node field missing or not a string"))?
             .to_string();
 
         let qset = parse_internal_quorum_set(&node["qset"])?;
@@ -46,9 +46,9 @@ fn try_parse_quorum_set_map_from_json_regular(root: Object) -> Result<QuorumSetM
 }
 
 fn parse_internal_quorum_set(json_qset: &JsonValue) -> Result<InternalScpQuorumSet, FbasError> {
-    let threshold = json_qset["t"]
-        .as_u32()
-        .ok_or_else(|| FbasError::ParseError("threshold field missing or not a number"))?;
+    let threshold = json_qset["t"].as_u32().ok_or(FbasError::ParseError(
+        "threshold field missing or not a number",
+    ))?;
 
     let v = match &json_qset["v"] {
         JsonValue::Array(v) => v,
@@ -86,7 +86,9 @@ fn parse_stellarbeats_internal_quorum_set(
 ) -> Result<InternalScpQuorumSet, FbasError> {
     let threshold = json_qset["threshold"]
         .as_u32()
-        .ok_or_else(|| FbasError::ParseError("threshold field missing or not a number"))?;
+        .ok_or(FbasError::ParseError(
+            "threshold field missing or not a number",
+        ))?;
 
     let mut validators = vec![];
     let mut inner_sets = vec![];
@@ -140,7 +142,9 @@ fn try_parse_quorum_set_map_from_stellarbeats_json(
         let public_key = node
             .get("publicKey")
             .and_then(|n| n.as_str())
-            .ok_or_else(|| FbasError::ParseError("publicKey field missing or not a string"))?
+            .ok_or(FbasError::ParseError(
+                "publicKey field missing or not a string",
+            ))?
             .to_string();
 
         let qset = parse_stellarbeats_internal_quorum_set(&node["quorumSet"])?;

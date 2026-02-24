@@ -17,17 +17,16 @@ const FILE_PATH: &str = "tests/test_data/random";
 #[derive(Default, Debug)]
 pub(crate) enum Status {
     #[default]
-    UNSAT,
-    SAT,
+    Unsat,
+    Sat,
 }
 
-impl ToString for Status {
-    fn to_string(&self) -> String {
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Status::UNSAT => "UNSAT",
-            Status::SAT => "SAT",
+            Status::Unsat => write!(f, "UNSAT"),
+            Status::Sat => write!(f, "SAT"),
         }
-        .to_string()
     }
 }
 
@@ -86,8 +85,8 @@ impl CNFSolverMeasurement for ScrewSat {
     fn measured_solve(&mut self) -> std::io::Result<(u64, Status)> {
         if let Some(sat) = &mut self.solver {
             let (time_usecs, status) = measure_execution(|| match sat.solve(None) {
-                screwsat::solver::Status::Sat => Status::SAT,
-                screwsat::solver::Status::Unsat => Status::UNSAT,
+                screwsat::solver::Status::Sat => Status::Sat,
+                screwsat::solver::Status::Unsat => Status::Unsat,
                 screwsat::solver::Status::Indeterminate => panic!("solver stopped searching"),
             });
             Ok((time_usecs, status))
@@ -116,8 +115,8 @@ impl<'a> CNFSolverMeasurement for VariSat<'a> {
     fn measured_solve(&mut self) -> std::io::Result<(u64, Status)> {
         if let Some(sat) = &mut self.solver {
             let (time_usecs, status) = measure_execution(|| match sat.solve().unwrap() {
-                true => Status::SAT,
-                false => Status::UNSAT,
+                true => Status::Sat,
+                false => Status::Unsat,
             });
             Ok((time_usecs, status))
         } else {
@@ -141,8 +140,8 @@ impl CNFSolverMeasurement for Splr {
     fn measured_solve(&mut self) -> std::io::Result<(u64, Status)> {
         if let Some(sat) = &mut self.solver {
             let (time_usecs, status) = measure_execution(|| match sat.solve().unwrap() {
-                splr::Certificate::SAT(_) => Status::SAT,
-                splr::Certificate::UNSAT => Status::UNSAT,
+                splr::Certificate::SAT(_) => Status::Sat,
+                splr::Certificate::UNSAT => Status::Unsat,
             });
             Ok((time_usecs, status))
         } else {
@@ -172,9 +171,9 @@ impl CNFSolverMeasurement for BatSat {
             let (time_usecs, status) = measure_execution(|| {
                 let res = sat.solve_limited(&[]);
                 if res == lbool::TRUE {
-                    Status::SAT
+                    Status::Sat
                 } else if res == lbool::FALSE {
-                    Status::UNSAT
+                    Status::Unsat
                 } else {
                     panic!("Solver returned UNDEF")
                 }
@@ -211,7 +210,7 @@ fn for_each_dimacs_file<C: CNFSolverMeasurement>(
                 res.setup_time = C::measured_setup(solver, path.as_path()).unwrap();
                 (res.solve_time, res.status) = C::measured_solve(solver).unwrap();
 
-                results.entry(file_stem).or_insert_with(Vec::new).push(res);
+                results.entry(file_stem).or_default().push(res);
             }
         }
     }
@@ -243,14 +242,13 @@ fn output_results(results: &BTreeMap<OsString, Vec<MeasurementResult>>) -> std::
 
     table.printstd();
     let mut result_table = File::create("results_table.txt")?;
-    write!(result_table, "{}", table)
+    write!(result_table, "{table}")
 }
 
 fn main() -> std::io::Result<()> {
     assert!(
         Path::new(FILE_PATH).is_dir(),
-        "Directory not found: {}",
-        FILE_PATH
+        "Directory not found: {FILE_PATH}"
     );
 
     let mut results: BTreeMap<OsString, Vec<MeasurementResult>> = Default::default();

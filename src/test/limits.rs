@@ -1,20 +1,17 @@
 use crate::{FbasAnalyzer, FbasError, ResourceLimiter, SolveStatus};
-use std::{path::PathBuf, process::Command, u64};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn assert_solver_limit_exceeded(res: Result<SolveStatus, FbasError>) -> bool {
     match res {
         Ok(_) => false,
-        Err(e) => {
-            if let FbasError::ResourcelimitExceeded(_) = e {
-                true
-            } else {
-                false
-            }
-        }
+        Err(e) => matches!(e, FbasError::ResourcelimitExceeded(_)),
     }
 }
 
-fn solve_unlimited(json_file: &PathBuf) -> Result<SolveStatus, FbasError> {
+fn solve_unlimited(json_file: &Path) -> Result<SolveStatus, FbasError> {
     let mut solver = FbasAnalyzer::from_json_path(
         json_file.as_os_str().to_str().unwrap(),
         ResourceLimiter::unlimited(),
@@ -22,10 +19,7 @@ fn solve_unlimited(json_file: &PathBuf) -> Result<SolveStatus, FbasError> {
     solver.solve()
 }
 
-fn solve_with_time_limit(
-    json_file: &PathBuf,
-    time_limit_ms: u64,
-) -> Result<SolveStatus, FbasError> {
+fn solve_with_time_limit(json_file: &Path, time_limit_ms: u64) -> Result<SolveStatus, FbasError> {
     let mut solver = FbasAnalyzer::from_json_path(
         json_file.as_os_str().to_str().unwrap(),
         ResourceLimiter::new(time_limit_ms, usize::MAX),
