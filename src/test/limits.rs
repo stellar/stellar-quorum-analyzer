@@ -1,8 +1,5 @@
 use crate::{FbasAnalyzer, FbasError, ResourceLimiter, SolveStatus};
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
 fn assert_solver_limit_exceeded(res: Result<SolveStatus, FbasError>) -> bool {
     match res {
@@ -27,29 +24,15 @@ fn solve_with_time_limit(json_file: &Path, time_limit_ms: u64) -> Result<SolveSt
     solver.solve()
 }
 
-// This is a test helper that overrides the global allocator's memory limit, and
-// therefore must be run in an isolated process. It is ignored when running the
-// regular test setup.
-#[ignore]
-#[test]
-fn test_memory_limit_ps() {
-    let args: Vec<String> = std::env::args().collect();
-    // args[]: program name, test name, "--include-ignored", "--no-capture", memory_limit_bytes
-    let memory_limit_bytes = if args.len() > 4 {
-        args[4].parse::<usize>().unwrap()
-    } else {
-        usize::MAX
-    };
-
-    let json_file = std::path::PathBuf::from(
-        "./tests/test_data/random/almost_symmetric_network_16_orgs_delete_prob_factor_3.json",
-    );
+fn solve_with_mem_limit(
+    json_file: &Path,
+    mem_limit_bytes: usize,
+) -> Result<SolveStatus, FbasError> {
     let mut solver = FbasAnalyzer::from_json_path(
         json_file.as_os_str().to_str().unwrap(),
-        ResourceLimiter::new(u64::MAX, memory_limit_bytes),
-    )
-    .unwrap();
-    solver.solve().unwrap();
+        ResourceLimiter::new(u64::MAX, mem_limit_bytes),
+    )?;
+    solver.solve()
 }
 
 #[test]
@@ -67,89 +50,58 @@ fn test_time_limit() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_memory_limit() -> Result<(), Box<dyn std::error::Error>> {
-    // first solve it without interruption, it should return normally
-    let output = Command::new("cargo")
-        .args([
-            "test",
-            "--package",
-            "stellar-quorum-analyzer",
-            "--lib",
-            "--",
-            "test_memory_limit_ps",
-            "--include-ignored",
-            "--nocapture",
-        ])
-        .output()?;
-    assert_eq!(output.status.code(), Some(0));
-
-    // Test memory limit - should abort due to LimitedAllocator
-    let output = Command::new("cargo")
-        .args([
-            "test",
-            "--package",
-            "stellar-quorum-analyzer",
-            "--lib",
-            "--",
-            "test_memory_limit_ps",
-            "--include-ignored",
-            "--nocapture",
-            "1000", // memory_limit_bytes
-        ])
-        .output()?;
-
-    assert_eq!(output.status.code(), Some(101));
-    #[cfg(unix)]
-    {
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(stderr.contains("SIGABRT"));
-    }
-    Ok(())
-}
-
-// Subprocess helper for test_resource_limiter_underflow.
-#[ignore]
-#[test]
-fn test_resource_limiter_underflow_ps() {
-    use crate::allocator::set_memory_limit;
-    // Use a generous allocator limit so allocations succeed
-    set_memory_limit(usize::MAX);
-
-    // Allocate memory before creating the resource limiter
-    let pre_alloc = vec![0u8; 1_000_000];
-
-    let mem_limit: usize = 500 * 1024 * 1024; // 500 MB
-    let limiter = ResourceLimiter::new(u64::MAX, mem_limit);
-
-    // Free so get_memory_usage() < start_memory
-    drop(pre_alloc);
-
-    // mem_bytes = 0 < 500MB → Ok
-    let result = limiter.measure_and_enforce_limits();
-    assert!(
-        result.is_ok(),
-        "Should not fail when memory decreases below start"
+    let json_file = PathBuf::from(
+        "./tests/test_data/random/almost_symmetric_network_16_orgs_delete_prob_factor_3.json",
     );
-}
-
-#[test]
-fn test_resource_limiter_underflow() -> Result<(), Box<dyn std::error::Error>> {
-    let output = Command::new("cargo")
-        .args([
-            "test",
-            "--package",
-            "stellar-quorum-analyzer",
-            "--lib",
-            "--",
-            "test_resource_limiter_underflow_ps",
-            "--include-ignored",
-            "--nocapture",
-        ])
-        .output()?;
+    // With a generous memory limit it should solve normally to UNSAT.
     assert_eq!(
-        output.status.code(),
-        Some(0),
-        "Subprocess should succeed. stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        solve_with_mem_limit(&json_file, usize::MAX)?,
+        SolveStatus::UNSAT
     );
+
+    // With a tight memory limit the estimated usage is exceeded during
+    // construction/solving, and it should fail gracefully with an FbasError
+    // rather than aborting the process.
+    assert!(assert_solver_limit_exceeded(solve_with_mem_limit(
+        &json_file, 1000
+    )));
     Ok(())
+}
+
+#[test]
+fn test_wide_qset_relaxed() {
+    use super::generators::{build_analyzer, gen_network_with_threshold};
+    // A single quorum set of 40 validators with threshold 20 implies
+    // C(40, 20) ~= 1.4e11 Tseitin combinations -- far past MAX_QSET_COMBINATIONS.
+    // Rather than aborting (multi-terabyte `Vec::with_capacity`) or erroring, the
+    // analyzer relaxes the over-wide qset to an empty quorum set and still
+    // produces a sound result. The fact that this returns is the assertion that
+    // no abort happened.
+    let mut analyzer = build_analyzer(
+        gen_network_with_threshold(40, 20),
+        ResourceLimiter::new(u64::MAX, usize::MAX),
+    )
+    .expect("wide qset should be relaxed, not error");
+    // Relaxing frees the qset, so a (sound, possibly-spurious) split exists.
+    assert!(matches!(analyzer.solve().unwrap(), SolveStatus::SAT(_)));
+
+    // Even under a tight memory limit the relaxed formula is tiny, so an even
+    // wider qset still completes gracefully instead of aborting or erroring.
+    let mut analyzer = build_analyzer(
+        gen_network_with_threshold(64, 32),
+        ResourceLimiter::new(u64::MAX, 50 * 1024 * 1024),
+    )
+    .expect("relaxed wide qset should fit a tight limit");
+    assert!(analyzer.solve().is_ok());
+}
+
+#[test]
+fn test_large_network_completes() {
+    use super::generators::{build_analyzer, gen_symmetric_network};
+    // A symmetric 2/3-threshold network has quorum intersection, so it solves to
+    // UNSAT. Confirms the generator produces valid, solvable input.
+    let qsm = gen_symmetric_network(8, 3, 6, 2);
+    let mut analyzer =
+        build_analyzer(qsm, ResourceLimiter::new(u64::MAX, usize::MAX)).expect("should build");
+    assert_eq!(analyzer.solve().unwrap(), SolveStatus::UNSAT);
 }

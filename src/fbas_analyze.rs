@@ -1,12 +1,24 @@
 use crate::{
-    fbas::{Fbas, FbasError},
-    resource_limiter::ResourceLimiter,
+    fbas::{estimate_fbas_bytes, Fbas, FbasError},
+    resource_limiter::{estimate_combinations, estimate_solver_bytes, ResourceLimiter},
 };
 use batsat::{interface::SolveResult, lbool, theory, Lit, Solver, SolverInterface, Var};
 use itertools::Itertools;
 use log::{trace, warn};
 use petgraph::graph::NodeIndex;
 use std::collections::BTreeMap;
+
+// Conservative per-node estimate for the `node -> (Var, Var)` membership map.
+const VAR_MAP_ENTRY_BYTES: usize = 64;
+// Upper bound on the up-front capacity reserved for a Tseitin `first_term`
+// clause. The combinatorial guard already bounds the total work against the
+// memory limit; this just prevents one oversized speculative reservation.
+const FIRST_TERM_PREALLOC_CAP: usize = 4096;
+// A quorum set whose Tseitin expansion would exceed this many combinations
+// (`C(successors, threshold)`) is relaxed to an *empty* quorum set rather than
+// encoded exactly (see `construct_formula`). This bounds the per-qset formula
+// size and avoids pathological blow-up.
+const MAX_QSET_COMBINATIONS: usize = 1_000_000;
 
 // Two imaginary quorums A and B, and we have FBAS system with V vertices. Note
 // that a vertex can be either a validator or a qset. The relation of each
@@ -146,6 +158,18 @@ impl FbasAnalyzer {
             status,
             vars: VarManager::default(),
         };
+        // `Solver::new` unconditionally allocates batsat's fixed clause region
+        // (~4 MiB), regardless of whether we ever build a formula or solve.
+        // Account for that base cost up front so the estimate covers it on every
+        // path -- in particular the `NoQuorum` short-circuit below, which skips
+        // `construct_vars`/`construct_formula` (the usual `account_solver` call
+        // sites) and never runs the solver, yet still paid for the region.
+        // `construct_vars` overwrites this with a larger count-based estimate on
+        // the SAT path, so this is a floor, not double-counting.
+        analyzer
+            .solver
+            .cb()
+            .account_solver(estimate_solver_bytes(0, 0, 0))?;
         if analyzer.status != SolveStatus::NoQuorum {
             analyzer.construct_vars()?;
             analyzer.construct_formula()?;
@@ -166,20 +190,37 @@ impl FbasAnalyzer {
         let vars = (0..2 * node_count)
             .map(|_| self.solver.new_var_default())
             .collect::<Vec<_>>();
+        // Account for the solver variables just created (no clauses yet).
+        self.solver.cb().account_solver(estimate_solver_bytes(
+            self.solver.num_vars() as usize,
+            0,
+            0,
+        ))?;
         for (i, ni) in self.fbas.graph.node_indices().enumerate() {
-            self.solver.cb().measure_and_enforce_limits()?;
             self.vars
                 .node_quorum_membership
                 .insert(ni, (vars[i], vars[i + node_count]));
         }
+        // Account for our own intermediate structures: the FBAS graph plus the
+        // node -> (Var, Var) membership map.
+        let structural = estimate_fbas_bytes(&self.fbas.graph, 0, 0)
+            .saturating_add(node_count.saturating_mul(VAR_MAP_ENTRY_BYTES));
+        self.solver.cb().account_structural(structural)?;
         Ok(())
     }
 
     fn add_clause_limited(
         solver: &mut Solver<ResourceLimiter>,
         clause: &mut Vec<Lit>,
+        total_lits: &mut usize,
     ) -> Result<bool, FbasError> {
-        solver.cb().measure_and_enforce_limits()?;
+        *total_lits = total_lits.saturating_add(clause.len());
+        let est = estimate_solver_bytes(
+            solver.num_vars() as usize,
+            solver.num_clauses() as usize,
+            *total_lits,
+        );
+        solver.cb().account_solver(est)?;
         Ok(solver.add_clause_reuse(clause))
     }
 
@@ -192,6 +233,10 @@ impl FbasAnalyzer {
             ));
         }
 
+        // running count of literals added to the solver, used to estimate the
+        // solver's memory footprint without observing the allocator
+        let mut total_lits = 0usize;
+
         // formula 1: both quorums are non-empty -- at least one *validator* must
         // exist in each quorum
         let mut quorum_a_non_empty = fbas
@@ -199,14 +244,14 @@ impl FbasAnalyzer {
             .iter()
             .map(|ni| self.vars.lit_in_quorum_a(ni, true))
             .collect::<Result<Vec<Lit>, FbasError>>()?;
-        Self::add_clause_limited(&mut self.solver, &mut quorum_a_non_empty)?;
+        Self::add_clause_limited(&mut self.solver, &mut quorum_a_non_empty, &mut total_lits)?;
 
         let mut quorum_b_non_empty = fbas
             .validators
             .iter()
             .map(|ni| self.vars.lit_in_quorum_b(ni, true))
             .collect::<Result<Vec<Lit>, FbasError>>()?;
-        Self::add_clause_limited(&mut self.solver, &mut quorum_b_non_empty)?;
+        Self::add_clause_limited(&mut self.solver, &mut quorum_b_non_empty, &mut total_lits)?;
 
         // formula 2: two quorums do not intersect -- no *validator* can appear in
         // both quorums
@@ -217,6 +262,7 @@ impl FbasAnalyzer {
                     self.vars.lit_in_quorum_a(ni, false)?,
                     self.vars.lit_in_quorum_b(ni, false)?,
                 ],
+                &mut total_lits,
             )?;
         }
 
@@ -237,10 +283,54 @@ impl FbasAnalyzer {
                     .node_weight(n_i)
                     .ok_or(FbasError::InternalError("Node index not found"))?
                     .get_threshold();
+                // This vertex generates C(K, threshold) combinations, each adding
+                // an auxiliary variable plus ~threshold clauses.
+                let k = fbas.graph.neighbors(n_i).count();
+                let t = threshold as usize;
+                let n_comb = estimate_combinations(k, t);
+
+                // If the quorum set is too wide, its Tseitin expansion would blow
+                // up the formula and the bare `Vec::with_capacity(C(K,T))`
+                // below could even abort the process. Instead of erroring out,
+                // relax it to an *empty* quorum set: emit no slice constraint, so
+                // the vertex may belong to any quorum freely.
+                //
+                // This is sound for proving quorum intersection. Dropping a slice
+                // constraint only relaxes the formula (it adds satisfying
+                // assignments, never removes them), so every real disjoint-quorum
+                // split is preserved: an UNSAT result stays trustworthy and no
+                // intersection failure is missed. The price is precision - a
+                // relaxed split may be spurious, making a SAT result a
+                // conservative over-approximation.
+                if n_comb > MAX_QSET_COMBINATIONS {
+                    warn!(
+                        target: "SCP",
+                        "quorum set vertex {n_i:?} too wide (C({k}, {t}) ~= {n_comb} > {MAX_QSET_COMBINATIONS}); \
+                         relaxing to an empty quorum set (sound over-approximation of intersection)"
+                    );
+                    return Ok(());
+                }
+
+                // Aggregate-memory guard: project this vertex's cost and enforce
+                // the limit before allocating (also bounds the `first_term`
+                // reservation below).
+                let proj_vars = (self.solver.num_vars() as usize).saturating_add(n_comb);
+                let proj_clauses = (self.solver.num_clauses() as usize)
+                    .saturating_add(n_comb.saturating_mul(t.saturating_add(1)));
+                let proj_lits =
+                    total_lits.saturating_add(n_comb.saturating_mul(3usize.saturating_mul(t) + 2));
+                self.solver.cb().account_solver(estimate_solver_bytes(
+                    proj_vars,
+                    proj_clauses,
+                    proj_lits,
+                ))?;
+
                 let successors = fbas.graph.neighbors(n_i);
                 let comb_of_successors = successors.into_iter().combinations(threshold as usize);
 
-                let mut first_term = Vec::with_capacity(comb_of_successors.size_hint().0 + 1);
+                // Cap the up-front reservation; the guard above bounds the total,
+                // and the `Vec` grows on demand if it really needs to.
+                let mut first_term = Vec::with_capacity((n_comb + 1).min(FIRST_TERM_PREALLOC_CAP));
                 first_term.push(node_in_quorum(&n_i, false)?);
                 for pi_i in comb_of_successors {
                     // Create a new variable as per Tseitin transformation for each
@@ -257,13 +347,14 @@ impl FbasAnalyzer {
                         Self::add_clause_limited(
                             &mut self.solver,
                             &mut vec![!alpha_i_j, node_in_quorum(n_k, true)?],
+                            &mut total_lits,
                         )?;
                         // 3rd term
                         third_term.push(node_in_quorum(n_k, false)?);
                     }
-                    Self::add_clause_limited(&mut self.solver, &mut third_term)?;
+                    Self::add_clause_limited(&mut self.solver, &mut third_term, &mut total_lits)?;
                 }
-                Self::add_clause_limited(&mut self.solver, &mut first_term)?;
+                Self::add_clause_limited(&mut self.solver, &mut first_term, &mut total_lits)?;
                 Ok(())
             })
         };
