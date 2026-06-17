@@ -217,7 +217,7 @@ impl FbasAnalyzer {
         *total_lits = total_lits.saturating_add(clause.len());
         let est = estimate_solver_bytes(
             solver.num_vars() as usize,
-            solver.num_clauses() as usize,
+            (solver.num_clauses() as usize).saturating_add(1),
             *total_lits,
         );
         solver.cb().account_solver(est)?;
@@ -314,11 +314,20 @@ impl FbasAnalyzer {
                 // Aggregate-memory guard: project this vertex's cost and enforce
                 // the limit before allocating (also bounds the `first_term`
                 // reservation below).
+                // Per combination: 1 alpha var; (t+1) clauses (t second-term + 1
+                // third-term); (3t+2) literals (2t second-term + (t+1) third-term
+                // + 1 alpha pushed into `first_term`). The single `first_term`
+                // clause emitted once per vertex contributes +1 clause and its
+                // leading `node_in_quorum(n_i, false)` literal contributes +1
+                // literal (the alpha literals are already in the per-combination
+                // +1 of 3t+2).
                 let proj_vars = (self.solver.num_vars() as usize).saturating_add(n_comb);
                 let proj_clauses = (self.solver.num_clauses() as usize)
-                    .saturating_add(n_comb.saturating_mul(t.saturating_add(1)));
-                let proj_lits =
-                    total_lits.saturating_add(n_comb.saturating_mul(3usize.saturating_mul(t) + 2));
+                    .saturating_add(n_comb.saturating_mul(t.saturating_add(1)))
+                    .saturating_add(1);
+                let proj_lits = total_lits
+                    .saturating_add(n_comb.saturating_mul(3usize.saturating_mul(t) + 2))
+                    .saturating_add(1);
                 self.solver.cb().account_solver(estimate_solver_bytes(
                     proj_vars,
                     proj_clauses,
