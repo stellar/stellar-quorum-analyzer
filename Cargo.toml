@@ -30,3 +30,7 @@ path = "benches/solver_comparison.rs"
 [features]
 default = []
 json = ["dep:json"]
+# Development-only: installs a measurement-only global allocator and enables a
+# test that compares real peak heap usage against the estimator. Never enable in
+# a normal build -- it overrides the global allocator.
+mem_eval = []

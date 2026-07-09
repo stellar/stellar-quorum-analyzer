@@ -1,4 +1,3 @@
-mod allocator;
 pub(crate) mod fbas;
 pub(crate) mod fbas_analyze;
 pub(crate) mod resource_limiter;
