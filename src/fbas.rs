@@ -262,7 +262,7 @@ impl Fbas {
         let mut known_qsets = BTreeMap::new();
 
         // First pass: add all validators
-        for (node_str, _) in qsm.iter() {
+        for node_str in qsm.keys() {
             let idx = fbas.add_validator(node_str.clone());
             known_validators.insert(node_str, idx);
         }
