@@ -11,6 +11,32 @@ use crate::{resource_limiter::ResourceLimiter, ResourceQuantity};
 
 const QUORUM_SET_MAX_DEPTH: u32 = 4;
 
+// Conservative per-element byte estimates for the FBAS graph and the temporary
+// lookup maps used during construction. These over-approximate petgraph's and
+// BTreeMap's real layout so the soft memory cap trips before memory is actually
+// exhausted (see `resource_limiter` for the rationale).
+const GRAPH_NODE_BYTES: usize = 64;
+const GRAPH_EDGE_BYTES: usize = 48;
+const MAP_ENTRY_BYTES: usize = 96;
+
+/// Conservative estimate of the bytes held by the FBAS graph plus the temporary
+/// `known_validators` / `known_qsets` maps used while building it.
+pub(crate) fn estimate_fbas_bytes(
+    graph: &DiGraph<Vertex, ()>,
+    known_validators: usize,
+    known_qsets: usize,
+) -> usize {
+    graph
+        .node_count()
+        .saturating_mul(GRAPH_NODE_BYTES)
+        .saturating_add(graph.edge_count().saturating_mul(GRAPH_EDGE_BYTES))
+        .saturating_add(
+            known_validators
+                .saturating_add(known_qsets)
+                .saturating_mul(MAP_ENTRY_BYTES),
+        )
+}
+
 pub(crate) type QuorumSetMap = BTreeMap<String, Rc<InternalScpQuorumSet>>;
 
 /// This is the internal representation of a quorum set. The Qset structure must
@@ -227,7 +253,7 @@ impl Fbas {
         }
     }
 
-    fn from_quorum_set_map(
+    pub(crate) fn from_quorum_set_map(
         qsm: QuorumSetMap,
         resource_limiter: &ResourceLimiter,
     ) -> Result<Self, FbasError> {
@@ -236,7 +262,7 @@ impl Fbas {
         let mut known_qsets = BTreeMap::new();
 
         // First pass: add all validators
-        for (node_str, _) in qsm.iter() {
+        for node_str in qsm.keys() {
             let idx = fbas.add_validator(node_str.clone());
             known_validators.insert(node_str, idx);
         }
@@ -274,7 +300,11 @@ impl Fbas {
         known_qsets: &mut BTreeMap<Qset, NodeIndex>,
         resource_limiter: &ResourceLimiter,
     ) -> Result<NodeIndex, FbasError> {
-        resource_limiter.measure_and_enforce_limits()?;
+        resource_limiter.account_structural(estimate_fbas_bytes(
+            &self.graph,
+            known_validators.len(),
+            known_qsets.len(),
+        ))?;
 
         if curr_depth == QUORUM_SET_MAX_DEPTH {
             return Err(FbasError::MaxDepthExceeded);
