@@ -1,0 +1,10 @@
+[
+  {
+    "publicKey": "BROKEN",
+    "quorumSet": {
+      "threshold": "one",
+      "validators": [],
+      "innerQuorumSets": []
+    }
+  }
+]

@@ -38,8 +38,11 @@ fn try_parse_quorum_set_map_from_json_regular(root: Object) -> Result<QuorumSetM
             .ok_or(FbasError::ParseError("node field missing or not a string"))?
             .to_string();
 
-        let qset = parse_internal_quorum_set(&node["qset"])?;
-        quorum_map.insert(public_key, Rc::new(qset));
+        let qset = match node.get("qset") {
+            None | Some(JsonValue::Null) => None,
+            Some(json_qset) => Some(Rc::new(parse_internal_quorum_set(json_qset)?)),
+        };
+        quorum_map.insert(public_key, qset);
     }
 
     Ok(quorum_map)
@@ -59,18 +62,14 @@ fn parse_internal_quorum_set(json_qset: &JsonValue) -> Result<InternalScpQuorumS
     let mut inner_sets = vec![];
 
     for item in v {
-        match item {
-            JsonValue::String(validator) => {
-                validators.push(validator.to_string());
-            }
-            JsonValue::Object(obj) if obj.get("t").is_some() => {
-                inner_sets.push(parse_internal_quorum_set(item)?);
-            }
-            _ => {
-                return Err(FbasError::ParseError(
-                    "validator entry must be either a string (PublicKey) or an object (QuorumSet)",
-                ))
-            }
+        if let Some(validator) = item.as_str() {
+            validators.push(validator.to_string());
+        } else if matches!(item, JsonValue::Object(obj) if obj.get("t").is_some()) {
+            inner_sets.push(parse_internal_quorum_set(item)?);
+        } else {
+            return Err(FbasError::ParseError(
+                "validator entry must be either a string (PublicKey) or an object (QuorumSet)",
+            ));
         }
     }
 
@@ -147,8 +146,11 @@ fn try_parse_quorum_set_map_from_stellarbeats_json(
             ))?
             .to_string();
 
-        let qset = parse_stellarbeats_internal_quorum_set(&node["quorumSet"])?;
-        quorum_map.insert(public_key, Rc::new(qset));
+        let qset = match node.get("quorumSet") {
+            None | Some(JsonValue::Null) => None,
+            Some(json_qset) => Some(Rc::new(parse_stellarbeats_internal_quorum_set(json_qset)?)),
+        };
+        quorum_map.insert(public_key, qset);
     }
 
     Ok(quorum_map)
