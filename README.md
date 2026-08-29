@@ -25,7 +25,9 @@ This analyzer uses a SAT solver to verify the quorum intersection property of FB
 
 - `cargo test`
 
-Test cases can be found in the `tests/test_data` directory. `tests_date/random` directory contains randomly generated configurations up to 16 organizations.
+Test cases can be found in the `tests/test_data` directory. The
+`tests/test_data/random` directory contains randomly generated configurations
+up to 16 organizations.
 
 ## Performance
 
@@ -38,7 +40,7 @@ To run benchmarks:
 
 ## Documentation
 
-- `docs/methods.md`: Contains detailed derivation of the methodology and SAT formulas used in the analyzer
+- `docs/method.md`: Contains detailed derivation of the methodology and SAT formulas used in the analyzer
 - API documentation: `cargo doc --open`
 
 ## Usage
@@ -46,13 +48,15 @@ To run benchmarks:
 ### As a Library
 
 ```rust
-use fbas_analyzer::{FbasAnalyzer, Basic};
+use stellar_quorum_analyzer::{FbasAnalyzer, ResourceLimiter};
 // From XDR-serialized buffer
-let analyzer = FbasAnalyzer::from_quorum_set_map_buf(nodes, quorum_sets, Basic::default())?;
-let result = analyzer.solve();
+let limiter = ResourceLimiter::new(u64::MAX, usize::MAX);
+let mut analyzer = FbasAnalyzer::from_quorum_set_map_buf(nodes, quorum_sets, limiter)?;
+let result = analyzer.solve()?;
 // From JSON (requires 'json' feature)
-let analyzer = FbasAnalyzer::from_json_path("quorum_map.json", Basic::default())?;
-let result = analyzer.solve();
+let limiter = ResourceLimiter::new(u64::MAX, usize::MAX);
+let mut analyzer = FbasAnalyzer::from_json_path("quorum_map.json", limiter)?;
+let result = analyzer.solve()?;
 // Get potential split information
 if let Ok((quorum_a, quorum_b)) = analyzer.get_potential_split() {
     // Process split information
@@ -63,6 +67,41 @@ if let Ok((quorum_a, quorum_b)) = analyzer.get_potential_split() {
 
 - **Buffer Interface**: Primary method for stellar-core integration, accepts XDR-serialized quorum maps
 - **JSON**: Alternative input method for configuration testing (requires `json` feature)
+
+### Missing quorum sets and over-approximation
+
+The analyzer accepts incomplete quorum-set maps. A validator whose quorum set
+is absent is retained in the FBAS and modeled as having no local quorum
+requirement. It can participate in a candidate quorum and count toward a known
+validator's threshold. Each candidate quorum must nevertheless contain at least
+one validator whose quorum set is known. 
+
+For the purpose of checking quorum intersection, this is a safe
+overapproximation: an `UNSAT` result implies that quorum intersection
+holds regardless of what the unknown quorum sets turn out to be.
+
+An unknown quorum set can be expressed by:
+
+- referencing a validator that has no top-level map entry;
+- supplying an empty qset buffer through the XDR API; or
+- omitting the qset field, or setting it to `null`, in either JSON format.
+
+The analyzer logs a warning for each validator modeled this way. Before
+returning a split, it emits another warning naming any validators with unknown
+quorum sets in each candidate quorum. A `SAT` result still uses the existing
+result variant and may therefore describe a potential, rather than confirmed,
+split if its witness contains a validator whose quorum set is unknown. Learning
+the missing qset could invalidate that witness. Likewise, the existing
+wide-qset safeguard relaxes constraints whose exact encoding would require more
+than one million combinations, which can also make `SAT` spurious. This release
+does not distinguish exact and over-approximate `SAT` outcomes in the result
+type.
+
+`UNSAT` means no split exists even under this permissive model, subject to the
+known-qset anchor rule. `NoQuorum` means no quorum containing a known-qset
+validator exists even after unknown qsets are treated permissively. Missing
+qsets alone do not cause `SolveStatus::UNKNOWN`; that status remains reserved
+for an indeterminate solver run, normally due to resource limits.
 
 ## Future Work
 

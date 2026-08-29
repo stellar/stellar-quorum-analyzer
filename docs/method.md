@@ -8,7 +8,7 @@ The method is inspired by the [python-fbas prototype](https://github.com/nano-o/
 
 The general idea is to create a formula that asserts that there are two non-empty, disjoint quorums $A$ and $B$.
 
-Our input is a FBAS graph, which is a directed graph whose set of nodes consists of a set of validators $v_1,\dots,v_N$ and a (disjoint) set of other nodes (which we call quorum-set nodes) $q_{N+1},\dots,q_M$. We may refer to a node in the graph $v_i$ or $q_i$ simply as node $i$. Each node $i$ in the graph also has an integer threshold $t_i>0$ that is at most equal to the degree of node $i$ in the graph.
+Our input is a FBAS graph, which is a directed graph whose set of nodes consists of a set of validators $v_1,\dots,v_N$ and a (disjoint) set of other nodes (which we call quorum-set nodes) $q_{N+1},\dots,q_M$. We may refer to a node in the graph $v_i$ or $q_i$ simply as node $i$. A validator with a known quorum set has one edge to its quorum-set node. A validator whose quorum set is unknown has no outgoing edge and is modeled without a local constraint. Quorum-set nodes have an integer threshold; the implementation also handles zero thresholds and thresholds greater than their degree.
 
 We say that a node $j$ is a successor of a node $i$ when there is an edge in the graph from $i$ to $j$. Given a node $i$, each set of $t_i$ successors of $i$ is called a slice of $i$. A quorum $Q$ is a set of nodes such that, for every node $i\in Q$, $i$ has a slice which is a subset of $Q$ (i.e. at least $t_i$ successors of $i$ are in $Q$).
 
@@ -24,13 +24,17 @@ We now create a propositional formula in CNF that is satisfiable if and only if 
 
 Remember that a CNF formula is a conjunction of disjunctions of literals (where a literal is a variable or the negation of a variable).
 
-#### 1. Both A and B contain at least one validator
+#### 1. Both A and B contain at least one validator with a known qset
 
 $$
 \left(\bigvee_{i=1}^N  A_i\right)\wedge\left(\bigvee_{i=1}^N  B_i\right)
 $$
 
-This is already in CNF form.
+Here the disjunction ranges only over validators whose quorum sets are known.
+Validators whose qsets are unknown may participate in either quorum, but a set
+containing only such validators cannot form a quorum. This known-qset-anchor
+rule matches `python-fbas.find_disjoint_quorums`. The formula is already in CNF
+form.
 
 #### 2.  A and B have no validator in common
 
@@ -42,7 +46,11 @@ This is also in CNF form.
 
 #### 3.  A and B are quorums
 
-For each quorum $Q\in\{A,B\}$, for each node $i$ in the graph (validator node or quorum set node), if $i$ is in $Q$ then $i$ has a slice in $Q$ (i.e. $t_i$ successors of $i$ are in the quorum). Formally:
+For each quorum $Q\in\{A,B\}$, for each constrained node $i$ in the graph (a
+known-qset validator or a quorum-set node), if $i$ is in $Q$ then $i$ has a
+slice in $Q$ (i.e. $t_i$ successors of $i$ are in the quorum). Unknown-qset
+validator nodes are intentionally omitted from this constraint, so their
+membership variables are locally unconstrained. Formally:
 
 $$
 \bigwedge_{i=1}^M \left( A_i \implies \Phi^A_i  \right) \wedge \left( B_i \implies \Phi^B_i \right)
@@ -130,18 +138,21 @@ answer collapses two opposite network states:
 
 1. **Intertwined (healthy):** quorums exist and every pair of quorums
    intersects.
-2. **Degenerate:** no quorum exists at all (for example, a validator's threshold
-   cannot be met because some of its quorum-set members are unknown/offline and
-   are treated as non-participating). With no quorum to find, the formula is
-   *vacuously* unsatisfiable.
+2. **Degenerate:** no quorum containing a validator with a known quorum set
+   exists at all (for example, every known validator's threshold exceeds the
+   number of members in its qset). With no anchored quorum to find, the formula
+   is *vacuously* unsatisfiable.
 
 To avoid reporting a degenerate, possibly-halted network as "safe", the analyzer
 runs a quorum-existence pre-pass before the SAT solve. It computes the **maximal
 quorum** — the union of all quorums — by a greatest-fixpoint contraction: begin
 with every validator, then repeatedly drop any validator whose quorum set is not
 satisfied by the validators that remain, until the set is stable. Because
-quorums are closed under union, the maximal quorum is empty iff the FBAS has no
-quorum at all.
+Validators with unknown qsets are always locally satisfied during contraction
+and can satisfy known thresholds. Quorums are closed under union, so the
+fixpoint contains every validator belonging to some modeled quorum. If the
+fixpoint contains no known-qset validator, it is reported as empty to preserve
+the SAT encoding's known-qset-anchor rule.
 
 - Maximal quorum **empty** → `SolveStatus::NoQuorum` (degenerate / possible
   halt); the SAT solve is skipped.
@@ -152,3 +163,20 @@ This mirrors stellar-core's legacy C++ quorum-intersection checker, which
 detects the same "no quorums found" condition via the same greatest-fixpoint
 contraction (`QuorumIntersectionCheckerImpl::contractToMaximalQuorum`) and warns
 about a possible network halt.
+
+## Approximation and result interpretation
+
+Missing quorum sets are treated as having no local requirement. Within the
+known-qset-anchor policy described above, this relaxes local constraints and may
+add a split that disappears once the missing qsets are known. The implementation
+also skips an individual qset constraint when its DNF expansion would exceed one
+million combinations. That wide-qset safeguard is another relaxation with the
+same one-sided effect.
+
+Both cases currently return ordinary `SolveStatus::SAT`; there is no separate
+result variant recording approximation provenance. A `SAT` witness that uses
+validators whose qsets are unknown, or depends on a relaxed wide qset, may
+therefore be spurious. `UNSAT` remains evidence that no split exists even in the
+permissive model. `NoQuorum` means the maximal permissive fixpoint contains no
+validator with a known qset. `UNKNOWN` is reserved for an indeterminate solver
+run and is not returned merely because input qsets are missing.
