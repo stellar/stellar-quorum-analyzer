@@ -60,6 +60,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+
+[[package]]
 name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -231,10 +237,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a9bfc1af68b1726ea47d3d5109de126281def866b33970e10fbab11b5dafab3"
+
+[[package]]
+name = "heapless"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+ "zeroize",
+]
 
 [[package]]
 name = "hermit-abi"
@@ -539,6 +565,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "stable_deref_trait"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
 name = "stellar-quorum-analyzer"
 version = "0.1.0"
 dependencies = [
@@ -551,7 +583,7 @@ dependencies = [
  "prettytable",
  "screwsat",
  "splr",
- "stellar-strkey",
+ "stellar-strkey 0.0.13",
  "stellar-xdr",
  "varisat",
 ]
@@ -567,16 +599,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "stellar-strkey"
+version = "0.0.18"
+source = "git+https://github.com/stellar/rs-stellar-strkey?rev=80085faa3e1f851fc28f3b2b941019265d46c314#80085faa3e1f851fc28f3b2b941019265d46c314"
+dependencies = [
+ "crate-git-revision 0.0.9",
+ "data-encoding",
+ "heapless",
+ "zeroize",
+]
+
+[[package]]
 name = "stellar-xdr"
-version = "27.0.0"
-source = "git+https://github.com/stellar/rs-stellar-xdr?rev=3305b3e31f19fdb4e64e4b7a4354bb120cdf4415#3305b3e31f19fdb4e64e4b7a4354bb120cdf4415"
+version = "28.0.0"
+source = "git+https://github.com/stellar/rs-stellar-xdr?rev=a9c9750e4a24473323f550b5184742975d6419f4#a9c9750e4a24473323f550b5184742975d6419f4"
 dependencies = [
  "crate-git-revision 0.0.9",
  "escape-bytes",
  "ethnum",
  "hex",
  "sha2",
- "stellar-strkey",
+ "stellar-strkey 0.0.18",
 ]
 
 [[package]]
@@ -861,3 +904,23 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "zeroize"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.87",
+]
