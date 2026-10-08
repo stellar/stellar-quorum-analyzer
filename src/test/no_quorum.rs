@@ -42,7 +42,7 @@ fn maximal_quorum_empty_when_threshold_exceeds_degree() {
 }
 
 #[test]
-fn maximal_quorum_feasible_with_unknown_is_all_validators() {
+fn maximal_quorum_feasible_with_unknown_qset_is_all_validators() {
     let mq = maximal_quorum_strings(&format!("{DATA_DIR}feasible_split_with_unknown.json"));
     assert_eq!(
         mq,
@@ -51,6 +51,7 @@ fn maximal_quorum_feasible_with_unknown_is_all_validators() {
             "B".to_string(),
             "C".to_string(),
             "D".to_string(),
+            "GHOST".to_string(),
         ])
     );
 }

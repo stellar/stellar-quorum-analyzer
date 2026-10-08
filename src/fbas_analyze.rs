@@ -33,7 +33,9 @@ const MAX_QSET_COMBINATIONS: usize = 1_000_000;
 //
 // The constraints are derived from the following formal requirements:
 //
-// 1. Both quorums must contain at least one validator
+// 1. Both quorums must contain at least one validator with a known quorum set.
+//    Validators whose quorum sets are unknown may participate, but do not
+//    anchor a quorum on their own.
 //
 // 2. Quorums must be disjoint (no validator in common)
 //
@@ -83,6 +85,12 @@ impl VarManager {
     }
 }
 
+/// Checks whether an FBAS admits two disjoint quorums.
+///
+/// Missing quorum sets are modeled permissively: their validators have no
+/// local satisfaction requirement, but can participate in quorums and satisfy
+/// known quorum-set thresholds. A [`SolveStatus::SAT`] witness that uses such a
+/// validator may therefore be conditional on the missing information.
 pub struct FbasAnalyzer {
     fbas: Fbas,
     solver: Solver<ResourceLimiter>,
@@ -92,14 +100,25 @@ pub struct FbasAnalyzer {
 
 #[derive(Clone, Default, PartialEq)]
 pub enum SolveStatus {
+    /// No pair of disjoint quorums exists under the analyzer's permissive
+    /// missing-qset model and known-qset-anchor rule.
     UNSAT,
+    /// A pair of disjoint quorums exists in the encoded model.
+    ///
+    /// This may be an over-approximate result when the witness uses validators
+    /// with unknown quorum sets or when a wide quorum-set constraint was
+    /// relaxed. The contained node indices are internal; use
+    /// [`FbasAnalyzer::get_potential_split`] to retrieve public keys.
     SAT((Vec<NodeIndex>, Vec<NodeIndex>)),
-    /// The FBAS contains no quorum at all (e.g. a validator depends on nodes
-    /// that cannot satisfy its threshold). The disjoint-quorum question is
-    /// vacuously unsatisfiable here, but this is a degenerate / potential-halt
-    /// condition and must NOT be conflated with `UNSAT` ("a quorum exists and
-    /// all quorums intersect").
+    /// The FBAS contains no quorum anchored by a validator with a known quorum
+    /// set, even after unknown quorum sets are treated permissively. The
+    /// disjoint-quorum question is vacuously unsatisfiable here, but this is a
+    /// degenerate / potential-halt condition and must not be conflated with
+    /// `UNSAT` ("a quorum exists and all quorums intersect").
     NoQuorum,
+    /// The solver could not determine satisfiability, normally because a
+    /// resource limit interrupted it. Missing quorum sets do not by themselves
+    /// produce this status.
     #[default]
     UNKNOWN,
 }
@@ -124,6 +143,11 @@ impl std::fmt::Display for SolveStatus {
 }
 
 impl FbasAnalyzer {
+    /// Construct an analyzer from parallel iterators of XDR-encoded node IDs
+    /// and quorum sets.
+    ///
+    /// An empty quorum-set buffer means that node's quorum set is unknown; the
+    /// node is retained and modeled without a local quorum requirement.
     pub fn from_quorum_set_map_buf<T: AsRef<[u8]>, I: ExactSizeIterator<Item = T>>(
         nodes: I,
         quorum_set: I,
@@ -134,6 +158,10 @@ impl FbasAnalyzer {
     }
 
     #[cfg(any(feature = "json", test))]
+    /// Construct an analyzer from the regular or Stellarbeat JSON format.
+    ///
+    /// An absent or `null` `qset`/`quorumSet` field is accepted as an unknown
+    /// quorum set and modeled permissively.
     pub fn from_json_path(
         path: &str,
         resource_limiter: ResourceLimiter,
@@ -237,18 +265,18 @@ impl FbasAnalyzer {
         // solver's memory footprint without observing the allocator
         let mut total_lits = 0usize;
 
-        // formula 1: both quorums are non-empty -- at least one *validator* must
-        // exist in each quorum
+        // formula 1: both quorums are non-empty -- at least one validator with
+        // a known quorum set must exist in each quorum. Validators whose quorum
+        // sets are unknown may participate, but do not anchor a quorum on their
+        // own.
         let mut quorum_a_non_empty = fbas
-            .validators
-            .iter()
+            .validators_with_qsets()
             .map(|ni| self.vars.lit_in_quorum_a(ni, true))
             .collect::<Result<Vec<Lit>, FbasError>>()?;
         Self::add_clause_limited(&mut self.solver, &mut quorum_a_non_empty, &mut total_lits)?;
 
         let mut quorum_b_non_empty = fbas
-            .validators
-            .iter()
+            .validators_with_qsets()
             .map(|ni| self.vars.lit_in_quorum_b(ni, true))
             .collect::<Result<Vec<Lit>, FbasError>>()?;
         Self::add_clause_limited(&mut self.solver, &mut quorum_b_non_empty, &mut total_lits)?;
@@ -278,6 +306,19 @@ impl FbasAnalyzer {
         >|
          -> Result<(), FbasError> {
             fbas.graph.node_indices().try_for_each(|n_i| {
+                // Validators whose quorum sets are unknown have no local
+                // satisfaction requirement. In particular, do not apply the
+                // generic validator threshold (1) to their empty successor
+                // list, which would incorrectly force them out of both
+                // quorums.
+                if matches!(
+                    fbas.graph.node_weight(n_i),
+                    Some(crate::fbas::Vertex::Validator(_))
+                ) && !fbas.validator_has_qset(n_i)
+                {
+                    return Ok(());
+                }
+
                 let threshold = fbas
                     .graph
                     .node_weight(n_i)
@@ -383,6 +424,30 @@ impl FbasAnalyzer {
         Ok(())
     }
 
+    fn validator_strings_with_unknown_qsets_from_fbas(
+        fbas: &Fbas,
+        quorum: &[NodeIndex],
+    ) -> Result<Vec<String>, FbasError> {
+        quorum
+            .iter()
+            .filter(|validator| !fbas.validator_has_qset(**validator))
+            .map(|validator| fbas.try_get_validator_string(validator))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn validator_strings_with_unknown_qsets(
+        &self,
+        quorum: &[NodeIndex],
+    ) -> Result<Vec<String>, FbasError> {
+        Self::validator_strings_with_unknown_qsets_from_fbas(&self.fbas, quorum)
+    }
+
+    /// Solve the disjoint-quorum formula.
+    ///
+    /// `SAT` is satisfiability of the encoded model. It may be
+    /// over-approximate when quorum sets are missing or too wide to encode
+    /// exactly; see [`SolveStatus::SAT`].
     pub fn solve(&mut self) -> Result<SolveStatus, FbasError> {
         let resource_limiter = self.solver.cb().clone();
 
@@ -416,6 +481,21 @@ impl FbasAnalyzer {
                         quorum_b.push(*ni);
                     }
                 }
+
+                let unknown_qsets_a =
+                    Self::validator_strings_with_unknown_qsets_from_fbas(&self.fbas, &quorum_a)?;
+                let unknown_qsets_b =
+                    Self::validator_strings_with_unknown_qsets_from_fbas(&self.fbas, &quorum_b)?;
+                if !unknown_qsets_a.is_empty() || !unknown_qsets_b.is_empty() {
+                    warn!(
+                        target: "SCP",
+                        "quorum split witness contains validators with unknown quorum sets and may be spurious; \
+                         quorum A validators with unknown quorum sets: {:?}, \
+                         quorum B validators with unknown quorum sets: {:?}",
+                        unknown_qsets_a,
+                        unknown_qsets_b
+                    );
+                }
                 warn!(
                     target: "SCP",
                     "FbasAnalyzer found quorum split! quorum A: {:?}, quorum B: {:?}",
@@ -433,10 +513,14 @@ impl FbasAnalyzer {
         Ok(self.status.clone())
     }
 
+    /// Return public keys for the most recently found `SAT` witness.
+    ///
+    /// Validators with unknown quorum sets are included. The returned vectors
+    /// are empty unless the latest status is [`SolveStatus::SAT`].
     pub fn get_potential_split(&self) -> Result<(Vec<String>, Vec<String>), FbasError> {
         match &self.status {
             // Note: the model returns one valid potential split, there is no
-            // guaruantee which one (there can be many permutations of the same
+            // guarantee which one (there can be many permutations of the same
             // split), make sure to check the content of the result to see if
             // it's expected.
             SolveStatus::SAT((quorum_a, quorum_b)) => {

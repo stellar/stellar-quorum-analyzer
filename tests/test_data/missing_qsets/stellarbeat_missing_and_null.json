@@ -1,0 +1,12 @@
+[
+  { "publicKey": "MISSING" },
+  { "publicKey": "NULL", "quorumSet": null },
+  {
+    "publicKey": "KNOWN",
+    "quorumSet": {
+      "threshold": 1,
+      "validators": ["KNOWN"],
+      "innerQuorumSets": []
+    }
+  }
+]

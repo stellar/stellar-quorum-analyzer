@@ -37,7 +37,11 @@ pub(crate) fn estimate_fbas_bytes(
         )
 }
 
-pub(crate) type QuorumSetMap = BTreeMap<String, Rc<InternalScpQuorumSet>>;
+/// Every supplied validator is represented in the map, even when its quorum
+/// set is unavailable. A missing quorum set is modeled permissively: the
+/// validator has no local quorum constraint, but can still satisfy validators
+/// that reference it.
+pub(crate) type QuorumSetMap = BTreeMap<String, Option<Rc<InternalScpQuorumSet>>>;
 
 /// This is the internal representation of a quorum set. The Qset structure must
 /// be explicitly specified (by validator's declaration). You can't say my inner
@@ -138,6 +142,9 @@ impl From<ScpQuorumSet> for InternalScpQuorumSet {
 pub(crate) struct Fbas {
     pub graph: DiGraph<Vertex, ()>,
     pub validators: Vec<NodeIndex>,
+    /// Validators with a known quorum set. Validator vertices outside this set
+    /// have no outgoing edge and are unconstrained locally.
+    pub validators_with_qsets: BTreeSet<NodeIndex>,
 }
 
 impl Fbas {
@@ -154,15 +161,56 @@ impl Fbas {
         }
     }
 
+    pub(crate) fn validator_has_qset(&self, validator: NodeIndex) -> bool {
+        self.validators_with_qsets.contains(&validator)
+    }
+
+    pub(crate) fn validators_with_qsets(&self) -> impl Iterator<Item = &NodeIndex> {
+        self.validators_with_qsets.iter()
+    }
+
+    /// Return a validator's quorum-set successor while enforcing the graph
+    /// invariant that validators with known qsets have exactly one successor
+    /// and validators with unknown qsets have none.
+    fn validator_qset(&self, validator: NodeIndex) -> Result<Option<NodeIndex>, FbasError> {
+        if !matches!(
+            self.graph.node_weight(validator),
+            Some(Vertex::Validator(_))
+        ) {
+            return Err(FbasError::InternalError("Node index is not a validator"));
+        }
+
+        let mut successors = self.graph.neighbors(validator);
+        let first = successors.next();
+        if successors.next().is_some() {
+            return Err(FbasError::InternalError(
+                "validator vertex has more than one quorum-set successor",
+            ));
+        }
+
+        match (self.validator_has_qset(validator), first) {
+            (true, Some(qset)) => Ok(Some(qset)),
+            (false, None) => Ok(None),
+            (true, None) => Err(FbasError::InternalError(
+                "known-qset validator has no quorum-set successor",
+            )),
+            (false, Some(_)) => Err(FbasError::InternalError(
+                "validator with an unknown quorum set has a quorum-set successor",
+            )),
+        }
+    }
+
     /// Computes the maximal quorum (the union of all quorums) as a set of
     /// validator node indices, via a greatest-fixpoint contraction: start with
     /// all validators and repeatedly drop any validator whose quorum set is not
     /// satisfied by the survivors, until the set is stable.
     ///
-    /// Because quorums are closed under union, the result is exactly the set of
-    /// validators that belong to *some* quorum. It is empty **if and only if**
-    /// the FBAS contains no quorum at all (a degenerate / potential-halt
-    /// condition).
+    /// Validators with unknown quorum sets are always locally satisfied under
+    /// the permissive missing-information model. Because quorums are closed
+    /// under union, the result is exactly the set of validators that belong to
+    /// some modeled quorum. It is empty if no such quorum contains a validator
+    /// with a known quorum set; sets containing only validators with unknown
+    /// qsets do not count as quorums for quorum-intersection analysis.
     ///
     /// NB: this is the same greatest-fixpoint contraction as stellar-core's
     /// `QuorumIntersectionCheckerImpl::contractToMaximalQuorum` which computes
@@ -184,30 +232,27 @@ impl Fbas {
             // `next` is always a subset of `current`, so equal sizes means we
             // reached the fixpoint.
             if next.len() == current.len() {
-                return Ok(next);
+                return if next.iter().any(|v| self.validator_has_qset(*v)) {
+                    Ok(next)
+                } else {
+                    Ok(BTreeSet::new())
+                };
             }
             current = next;
         }
     }
 
-    /// A validator is satisfied by `set` iff its single quorum-set successor is
-    /// satisfied by `set`.
-    ///
-    /// Returns `Err(InternalError)` if the validator has no quorum-set
-    /// successor. This is unreachable in a well-formed graph.
+    /// A known-qset validator is satisfied by `set` iff its quorum-set
+    /// successor is satisfied by `set`. A validator with an unknown quorum set
+    /// is unconstrained and therefore always locally satisfied.
     fn validator_satisfied_by(
         &self,
         v: NodeIndex,
         set: &BTreeSet<NodeIndex>,
     ) -> Result<bool, FbasError> {
-        match self.graph.neighbors(v).next() {
+        match self.validator_qset(v)? {
             Some(qset_node) => self.node_satisfied_by(qset_node, set),
-            // `from_quorum_set_map` adds exactly one edge from every validator
-            // to its quorum-set node. A `None` here therefore means that
-            // construction invariant was violated.
-            None => Err(FbasError::InternalError(
-                "validator vertex has no quorum-set successor",
-            )),
+            None => Ok(true),
         }
     }
 
@@ -261,26 +306,47 @@ impl Fbas {
         let mut known_validators = BTreeMap::new();
         let mut known_qsets = BTreeMap::new();
 
-        // First pass: add all validators
+        // First pass: add all explicitly supplied validators, including those
+        // whose quorum sets are unavailable. This ensures that a top-level
+        // validator is known before any quorum-set references are processed.
         for node_str in qsm.keys() {
             let idx = fbas.add_validator(node_str.clone());
-            known_validators.insert(node_str, idx);
+            known_validators.insert(node_str.clone(), idx);
         }
+        resource_limiter.account_structural(estimate_fbas_bytes(
+            &fbas.graph,
+            known_validators.len(),
+            known_qsets.len(),
+        ))?;
 
         // Second pass: process quorum sets and create connections
         for (node_str, qset) in qsm.iter() {
-            let v_idx = known_validators
+            let v_idx = *known_validators
                 .get(node_str)
                 .ok_or(FbasError::InternalError("key not found"))?;
-            let q_idx = fbas.process_scp_quorum_set(
-                qset,
-                0,
-                &known_validators,
-                &mut known_qsets,
-                resource_limiter,
-            )?;
-            let _ = fbas.graph.add_edge(*v_idx, q_idx, ());
+            if let Some(qset) = qset {
+                let q_idx = fbas.process_scp_quorum_set(
+                    qset,
+                    0,
+                    &mut known_validators,
+                    &mut known_qsets,
+                    resource_limiter,
+                )?;
+                let _ = fbas.graph.add_edge(v_idx, q_idx, ());
+                fbas.validators_with_qsets.insert(v_idx);
+            } else {
+                warn!(
+                    target: "SCP",
+                    "validator {node_str} has no quorum set; modeling it without a local quorum constraint"
+                );
+            }
         }
+
+        resource_limiter.account_structural(estimate_fbas_bytes(
+            &fbas.graph,
+            known_validators.len(),
+            known_qsets.len(),
+        ))?;
 
         trace!(
             target: "SCP",
@@ -296,7 +362,7 @@ impl Fbas {
         &mut self,
         qset: &InternalScpQuorumSet,
         curr_depth: u32,
-        known_validators: &BTreeMap<&String, NodeIndex>,
+        known_validators: &mut BTreeMap<String, NodeIndex>,
         known_qsets: &mut BTreeMap<Qset, NodeIndex>,
         resource_limiter: &ResourceLimiter,
     ) -> Result<NodeIndex, FbasError> {
@@ -317,11 +383,23 @@ impl Fbas {
 
         // Add validators
         for validator in &qset.validators {
-            if let Some(&idx) = known_validators.get(validator) {
-                new_qset.validators.insert(idx);
+            let idx = if let Some(&idx) = known_validators.get(validator) {
+                idx
             } else {
-                warn!(target: "SCP", "validator {} is unknown", validator);
-            }
+                warn!(
+                    target: "SCP",
+                    "validator {validator} has no quorum set; modeling it without a local quorum constraint"
+                );
+                let idx = self.add_validator(validator.clone());
+                known_validators.insert(validator.clone(), idx);
+                resource_limiter.account_structural(estimate_fbas_bytes(
+                    &self.graph,
+                    known_validators.len(),
+                    known_qsets.len(),
+                ))?;
+                idx
+            };
+            new_qset.validators.insert(idx);
         }
 
         // Process inner quorum sets
@@ -353,6 +431,12 @@ impl Fbas {
             let _ = self.graph.update_edge(idx, *qi, ());
         });
 
+        resource_limiter.account_structural(estimate_fbas_bytes(
+            &self.graph,
+            known_validators.len(),
+            known_qsets.len(),
+        ))?;
+
         Ok(idx)
     }
 
@@ -381,9 +465,9 @@ impl Fbas {
                 let qset = ScpQuorumSet::from_xdr(qset_buf, Limits::none()).map_err(|_| {
                     FbasError::XdrDecodingError("ScpQuorumSet cannot be decoded from xdr")
                 })?;
-                quorum_set_map.insert(node_str, Rc::new(qset.into()));
+                quorum_set_map.insert(node_str, Some(Rc::new(qset.into())));
             } else {
-                warn!(target: "SCP", "Validator {}'s quorum set is empty", node_str);
+                quorum_set_map.insert(node_str, None);
             }
         }
 

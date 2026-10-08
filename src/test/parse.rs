@@ -1,4 +1,5 @@
 use crate::json_parser::quorum_set_map_from_json;
+use crate::FbasError;
 use std::str::FromStr;
 use stellar_strkey::ed25519::PublicKey as StrKeyPublicKey;
 
@@ -13,7 +14,7 @@ fn test_parse_quorum_set_map_from_json() {
             .unwrap();
     let test_node_id = test_key.to_string();
 
-    let test_qset = quorum_map.get(&test_node_id).unwrap();
+    let test_qset = quorum_map.get(&test_node_id).unwrap().as_ref().unwrap();
     assert_eq!(test_qset.threshold, 3);
     assert_eq!(test_qset.inner_sets.len(), 3);
 
@@ -44,7 +45,7 @@ fn test_parse_quorum_set_map_from_stellarbeats_json() {
             .unwrap();
     let test_node_id = test_key.to_string();
 
-    let test_qset = quorum_map.get(&test_node_id).unwrap();
+    let test_qset = quorum_map.get(&test_node_id).unwrap().as_ref().unwrap();
     assert_eq!(test_qset.threshold, 5);
     assert!(test_qset.validators.is_empty());
     assert_eq!(test_qset.inner_sets.len(), 7);
@@ -58,4 +59,41 @@ fn test_parse_quorum_set_map_from_stellarbeats_json() {
     // Check specific validator in first inner set
     let expected_validator = "GAAV2GCVFLNN522ORUYFV33E76VPC22E72S75AQ6MBR5V45Z5DWVPWEU";
     assert_eq!(&first_inner.validators[0], expected_validator);
+}
+
+#[test]
+fn regular_json_accepts_missing_and_null_qsets() {
+    let quorum_map =
+        quorum_set_map_from_json("./tests/test_data/missing_qsets/regular_missing_and_null.json")
+            .unwrap();
+
+    assert_eq!(quorum_map.len(), 3);
+    assert!(quorum_map.get("MISSING").unwrap().is_none());
+    assert!(quorum_map.get("NULL").unwrap().is_none());
+    assert!(quorum_map.get("KNOWN").unwrap().is_some());
+}
+
+#[test]
+fn stellarbeat_json_accepts_missing_and_null_qsets() {
+    let quorum_map = quorum_set_map_from_json(
+        "./tests/test_data/missing_qsets/stellarbeat_missing_and_null.json",
+    )
+    .unwrap();
+
+    assert_eq!(quorum_map.len(), 3);
+    assert!(quorum_map.get("MISSING").unwrap().is_none());
+    assert!(quorum_map.get("NULL").unwrap().is_none());
+    assert!(quorum_map.get("KNOWN").unwrap().is_some());
+}
+
+#[test]
+fn present_malformed_qsets_remain_parse_errors() {
+    for fixture in ["regular_malformed.json", "stellarbeat_malformed.json"] {
+        let result =
+            quorum_set_map_from_json(&format!("./tests/test_data/missing_qsets/{fixture}"));
+        assert!(
+            matches!(result, Err(FbasError::ParseError(_))),
+            "expected parse error for {fixture}"
+        );
+    }
 }

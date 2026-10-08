@@ -1,0 +1,7 @@
+{
+  "nodes": [
+    { "node": "MISSING" },
+    { "node": "NULL", "qset": null },
+    { "node": "KNOWN", "qset": { "t": 1, "v": ["KNOWN"] } }
+  ]
+}

@@ -25,7 +25,7 @@ pub(crate) fn gen_network_with_threshold(nodes: usize, threshold: u32) -> Quorum
     });
     let mut map = QuorumSetMap::new();
     for name in names {
-        map.insert(name, qset.clone());
+        map.insert(name, Some(qset.clone()));
     }
     map
 }
@@ -57,7 +57,7 @@ pub(crate) fn gen_symmetric_network(
     let mut map = QuorumSetMap::new();
     for o in 0..orgs {
         for n in 0..nodes_per_org {
-            map.insert(node_name(o, n), top.clone());
+            map.insert(node_name(o, n), Some(top.clone()));
         }
     }
     map

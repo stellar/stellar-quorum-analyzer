@@ -7,3 +7,4 @@ mod mem_eval;
 mod no_quorum;
 #[cfg(any(feature = "json", test))]
 mod parse;
+mod unknown_qsets;
